@@ -19,7 +19,7 @@ setup(
         "Operating System :: Microsoft :: Windows",
         "Operating System :: POSIX",
     ],
-    packages=["condor_watch_q"],
+    py_modules=["condor_watch_q"],
     entry_points={"console_scripts": ["condor_watch_q = condor_watch_q:cli"]},
     install_requires=Path("requirements.txt").read_text().splitlines(),
 )
