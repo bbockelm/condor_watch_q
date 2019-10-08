@@ -15,6 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import print_function
 
 import argparse
 import collections
@@ -26,7 +27,6 @@ import re
 import textwrap
 import time
 import enum
-from pathlib import Path
 
 import htcondor
 import classad
@@ -87,7 +87,7 @@ def cli():
             prev_lines = list(msg.splitlines())
             prev_len_lines = [len(line) for line in prev_lines]
 
-            move = f"\033[{len(prev_len_lines)}A\r"
+            move = "\033[{}A\r".format(len(prev_len_lines))
             clear = (
                 "\n".join(" " * len(remove_ansi(line)) for line in prev_lines) + "\n"
             )
@@ -117,8 +117,8 @@ def find_job_event_logs(users, cluster_ids, files):
 
     constraint = " || ".join(
         itertools.chain(
-            (f"Owner == {classad.quote(u)}" for u in users),
-            (f"ClusterId == {cid}" for cid in cluster_ids),
+            ("Owner == {}".format(classad.quote(u)) for u in users),
+            ("ClusterId == {}".format(cid) for cid in cluster_ids),
         )
     )
     if constraint != "":
@@ -132,14 +132,16 @@ def find_job_event_logs(users, cluster_ids, files):
         cluster_id = ad["ClusterId"]
         cluster_ids.add(cluster_id)
         try:
-            event_logs.add(Path(ad["UserLog"]).absolute())
+            event_logs.add(os.path.abspath(ad["UserLog"]))
         except KeyError:
-            print(f"Warning: cluster {cluster_id} does not have a job event log")
+            print(
+                "Warning: cluster {} does not have a job event log".format(cluster_id)
+            )
 
     if len(files) > 0:
         cluster_ids = None
     for file in files:
-        event_logs.add(Path(file).absolute())
+        event_logs.add(os.path.abspath(file))
 
     return cluster_ids, event_logs
 
@@ -151,7 +153,7 @@ def query(constraint, projection=None):
 
 
 def make_event_readers(event_log_paths):
-    return [htcondor.JobEventLog(p.as_posix()).events(0) for p in event_log_paths]
+    return [htcondor.JobEventLog(p).events(0) for p in event_log_paths]
 
 
 class JobState:
@@ -172,7 +174,6 @@ class JobState:
                 new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
                 if new_status is not None:
                     self.state[event.cluster][event.proc] = new_status
-                    # print(f"{event.cluster}.{event.proc} {new_status}")
 
     def table_by_clusterid(self):
         headers = ["CLUSTER_ID"] + list(JobStatus) + ["TOTAL"]
@@ -235,7 +236,7 @@ JOB_EVENT_STATUS_TRANSITIONS = {
 }
 
 
-def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None) -> str:
+def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None):
     if header_fmt is None:
         header_fmt = lambda _: _
     if row_fmt is None:
@@ -261,38 +262,17 @@ def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None)
         ).rstrip()
     )
 
-    lines = (
+    lines = [
         row_fmt(
             "  ".join(getattr(f, a)(l) for f, l, a in zip(row, lengths, align_methods))
         )
         for row in processed_rows
-    )
+    ]
 
-    output = "\n".join((header, *lines))
+    output = "\n".join([header] + lines)
 
     return output
 
 
 if __name__ == "__main__":
-    import random
-
-    htcondor.enable_debug()
-
-    schedd = htcondor.Schedd()
-
-    sub = htcondor.Submit(
-        dict(
-            executable="/bin/sleep",
-            arguments="1",
-            hold=False,
-            log=(Path.cwd() / "$(Cluster).log").as_posix(),
-        )
-    )
-    for x in range(1, 6):
-        with schedd.transaction() as txn:
-            sub.queue(txn, random.randint(1, 10))
-
-    os.system("condor_q")
-    print()
-
     cli()
