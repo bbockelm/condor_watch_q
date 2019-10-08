@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+CONTAINER_TAG=condor_watch_q-tests
+
+set -e
+echo "Building condor_watch_q testing container..."
+docker build --quiet -t ${CONTAINER_TAG} --file tests/_inf/Dockerfile .
+docker run -it --rm ${CONTAINER_TAG} $@
