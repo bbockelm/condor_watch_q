@@ -79,37 +79,40 @@ def cli():
     state = JobState(cluster_ids=cluster_ids)
     event_readers = make_event_readers(event_logs)
 
-    msg = None
-    while True:
-        reading = "Reading new events..."
-        print(reading, end="")
-        sys.stdout.flush()
-        state.process_events(event_readers)
-        print("\r" + (len(reading) * " ") + "\r" + "\033[1A")
-        sys.stdout.flush()
+    try:
+        msg = None
+        while True:
+            reading = "Reading new events..."
+            print(reading, end="")
+            sys.stdout.flush()
+            state.process_events(event_readers)
+            print("\r" + (len(reading) * " ") + "\r" + "\033[1A")
+            sys.stdout.flush()
 
-        if msg is not None:
-            prev_lines = list(msg.splitlines())
-            prev_len_lines = [len(line) for line in prev_lines]
+            if msg is not None:
+                prev_lines = list(msg.splitlines())
+                prev_len_lines = [len(line) for line in prev_lines]
 
-            move = "\033[{}A\r".format(len(prev_len_lines))
-            clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
-            sys.stdout.write(move + clear + move)
+                move = "\033[{}A\r".format(len(prev_len_lines))
+                clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
+                sys.stdout.write(move + clear + move)
 
-        msg = state.table_by_clusterid().splitlines()
-        msg += [
-            "",
-            "Updated at {}".format(
-                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ),
-        ]
-        msg = "\n".join(msg)
+            msg = state.table_by_clusterid().splitlines()
+            msg += [
+                "",
+                "Updated at {}".format(
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ),
+            ]
+            msg = "\n".join(msg)
 
-        print(msg)
+            print(msg)
 
-        first = False
+            first = False
 
-        time.sleep(1)
+            time.sleep(1)
+    except KeyboardInterrupt:
+        sys.exit(0)
 
 
 def find_job_event_logs(users, cluster_ids, files):
