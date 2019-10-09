@@ -59,6 +59,9 @@ def parse_args():
     parser.add_argument(
         "--files", "--file", "-f", nargs="+", help="Which event logs to track."
     )
+    parser.add_argument(
+        "--debug", action="store_true", help="Turn on HTCondor debug printing."
+    )
 
     args = parser.parse_args()
 
@@ -70,6 +73,9 @@ def parse_args():
 
 def cli():
     args = parse_args()
+
+    if args.debug:
+        htcondor.enable_debug()
 
     cluster_ids, event_logs = find_job_event_logs(args.users, args.clusters, args.files)
     if cluster_ids is not None and len(cluster_ids) == 0:
