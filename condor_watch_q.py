@@ -27,6 +27,7 @@ import re
 import textwrap
 import time
 import enum
+import datetime
 
 import htcondor
 import classad
@@ -78,33 +79,37 @@ def cli():
     state = JobState(cluster_ids=cluster_ids)
     event_readers = make_event_readers(event_logs)
 
-    first = True
+    msg = None
     while True:
+        reading = "Reading new events..."
+        print(reading, end="")
+        sys.stdout.flush()
         state.process_events(event_readers)
-        msg = state.table_by_clusterid()
+        print("\r" + (len(reading) * " ") + "\r" + "\033[1A")
+        sys.stdout.flush()
 
-        if not first:
+        if msg is not None:
             prev_lines = list(msg.splitlines())
             prev_len_lines = [len(line) for line in prev_lines]
 
             move = "\033[{}A\r".format(len(prev_len_lines))
-            clear = (
-                "\n".join(" " * len(remove_ansi(line)) for line in prev_lines) + "\n"
-            )
+            clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
             sys.stdout.write(move + clear + move)
+
+        msg = state.table_by_clusterid().splitlines()
+        msg += [
+            "",
+            "Updated at {}".format(
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ),
+        ]
+        msg = "\n".join(msg)
 
         print(msg)
 
         first = False
 
         time.sleep(1)
-
-
-RE_ANSI = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
-
-
-def remove_ansi(text):
-    return RE_ANSI.sub("", text)
 
 
 def find_job_event_logs(users, cluster_ids, files):
@@ -197,14 +202,14 @@ class JobState:
             for row in rows:
                 row.pop(d)
 
-        return table(headers=headers, rows=rows, alignment={"CLUSTER_ID": "ljust"})
+        return table(headers=headers, rows=rows, alignment=TABLE_ALIGNMENT)
 
 
 class JobStatus(enum.Enum):
     IDLE = "IDLE"
-    RUNNING = "RUNNING"
+    RUNNING = "RUN"
     REMOVED = "REMOVED"
-    COMPLETED = "COMPLETED"
+    COMPLETED = "DONE"
     HELD = "HELD"
     TRANSFERRING_OUTPUT = "TRANSFERRING_OUTPUT"
     SUSPENDED = "SUSPENDED"
@@ -220,6 +225,11 @@ ALWAYS_INCLUDE = {
     "CLUSTER_ID",
     "TOTAL",
 }
+
+TABLE_ALIGNMENT = {"CLUSTER_ID": "ljust", "TOTAL": "rjust"}
+for k in JobStatus:
+    TABLE_ALIGNMENT[k] = "rjust"
+
 
 JOB_EVENT_STATUS_TRANSITIONS = {
     htcondor.JobEventType.SUBMIT: JobStatus.IDLE,
@@ -275,4 +285,26 @@ def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None)
 
 
 if __name__ == "__main__":
+    import os
+    import random
+
+    htcondor.enable_debug()
+
+    schedd = htcondor.Schedd()
+
+    sub = htcondor.Submit(
+        dict(
+            executable="/bin/sleep",
+            arguments="1",
+            hold=False,
+            log=os.path.join(os.getcwd(), "$(Cluster).log"),
+        )
+    )
+    for x in range(1, 6):
+        with schedd.transaction() as txn:
+            sub.queue(txn, random.randint(1, 10))
+
+    os.system("condor_q")
+    print()
+
     cli()
