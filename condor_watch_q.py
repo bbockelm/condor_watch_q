@@ -82,8 +82,7 @@ def cli():
         print("No jobs found")
         sys.exit(0)
 
-    state = JobState(cluster_ids=cluster_ids)
-    event_readers = make_event_readers(event_logs)
+    state = JobStateTracker(event_logs)
 
     try:
         msg = None
@@ -91,7 +90,7 @@ def cli():
             reading = "Reading new events..."
             print(reading, end="")
             sys.stdout.flush()
-            state.process_events(event_readers)
+            state.process_events()
             print("\r" + (len(reading) * " ") + "\r" + "\033[1A")
             sys.stdout.flush()
 
@@ -103,7 +102,7 @@ def cli():
                 clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
                 sys.stdout.write(move + clear + move)
 
-            msg = state.table_by_clusterid().splitlines()
+            msg = state.table_by_event_log().splitlines()
             msg += [
                 "",
                 "Updated at {}".format(
@@ -113,8 +112,6 @@ def cli():
             msg = "\n".join(msg)
 
             print(msg)
-
-            first = False
 
             time.sleep(1)
     except KeyboardInterrupt:
@@ -152,8 +149,6 @@ def find_job_event_logs(users, cluster_ids, files):
                 "Warning: cluster {} does not have a job event log".format(cluster_id)
             )
 
-    if len(files) > 0:
-        cluster_ids = None
     for file in files:
         event_logs.add(os.path.abspath(file))
 
@@ -166,46 +161,38 @@ def query(constraint, projection=None):
     return ads
 
 
-def make_event_readers(event_log_paths):
-    return [htcondor.JobEventLog(p).events(0) for p in event_log_paths]
+class JobStateTracker:
+    def __init__(self, event_log_paths):
+        self.event_readers = {
+            p: htcondor.JobEventLog(p).events(0) for p in event_log_paths
+        }
+        self.state = collections.defaultdict(lambda: collections.defaultdict(dict))
 
-
-class JobState:
-    def __init__(self, cluster_ids):
-        self.cluster_ids = set(cluster_ids) if cluster_ids is not None else None
-
-        self.state = collections.defaultdict(dict)
-
-    def process_events(self, event_readers):
-        for reader in event_readers:
-            for event in reader:
-                if (
-                    self.cluster_ids is not None
-                    and event.cluster not in self.cluster_ids
-                ):
-                    continue
-
+    def process_events(self):
+        for event_log_path, events in self.event_readers.items():
+            for event in events:
                 new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
                 if new_status is not None:
-                    self.state[event.cluster][event.proc] = new_status
+                    self.state[event_log_path][event.cluster][event.proc] = new_status
 
-    def table_by_clusterid(self):
-        headers = ["CLUSTER_ID"] + list(JobStatus) + ["TOTAL"]
+    def table_by_event_log(self):
+        headers = ["EVENT_LOG"] + list(JobStatus.ordered()) + ["TOTAL"]
         rows = []
-        for cluster_id, procs in sorted(self.state.items()):
+        for event_log_path, state in sorted(self.state.items()):
             # todo: total should be derived from somewhere else, for late materialization
             d = {js: 0 for js in JobStatus}
-            for proc_status in procs.values():
-                d[proc_status] += 1
+            for cluster_id, procs in state.items():
+                for proc_status in procs.values():
+                    d[proc_status] += 1
             d["TOTAL"] = sum(d.values())
-            d["CLUSTER_ID"] = cluster_id
+            d["EVENT_LOG"] = normalize_path(event_log_path)
             rows.append(d)
 
         dont_include = set()
         for h in headers:
             if all((row[h] == 0 for row in rows)):
                 dont_include.add(h)
-        dont_include = dont_include.difference(ALWAYS_INCLUDE)
+        dont_include -= ALWAYS_INCLUDE
         headers = [h for h in headers if h not in dont_include]
         for d in dont_include:
             for row in rows:
@@ -214,28 +201,48 @@ class JobState:
         return table(headers=headers, rows=rows, alignment=TABLE_ALIGNMENT)
 
 
+def normalize_path(path):
+    try:
+        relative_to_user_home = os.path.relpath(path, os.getcwd())
+        return os.path.join("~", relative_to_user_home)
+    except OSError:
+        return path
+
+
 class JobStatus(enum.Enum):
+    REMOVED = "REMOVED"
+    HELD = "HELD"
     IDLE = "IDLE"
     RUNNING = "RUN"
-    REMOVED = "REMOVED"
     COMPLETED = "DONE"
-    HELD = "HELD"
     TRANSFERRING_OUTPUT = "TRANSFERRING_OUTPUT"
     SUSPENDED = "SUSPENDED"
 
     def __str__(self):
         return self.value
 
+    @classmethod
+    def ordered(cls):
+        return (
+            cls.REMOVED,
+            cls.HELD,
+            cls.SUSPENDED,
+            cls.IDLE,
+            cls.RUNNING,
+            cls.TRANSFERRING_OUTPUT,
+            cls.COMPLETED,
+        )
+
 
 ALWAYS_INCLUDE = {
     JobStatus.IDLE,
     JobStatus.RUNNING,
     JobStatus.COMPLETED,
-    "CLUSTER_ID",
+    "EVENT_LOG",
     "TOTAL",
 }
 
-TABLE_ALIGNMENT = {"CLUSTER_ID": "ljust", "TOTAL": "rjust"}
+TABLE_ALIGNMENT = {"EVENT_LOG": "ljust", "TOTAL": "rjust"}
 for k in JobStatus:
     TABLE_ALIGNMENT[k] = "rjust"
 
