@@ -176,16 +176,29 @@ class JobStateTracker:
                     self.state[event_log_path][event.cluster][event.proc] = new_status
 
     def table_by_event_log(self):
-        headers = ["EVENT_LOG"] + list(JobStatus.ordered()) + ["TOTAL"]
+        headers = (
+            ["EVENT_LOG"] + list(JobStatus.ordered()) + ["TOTAL", "ACTIVE_JOB_IDS"]
+        )
         rows = []
         for event_log_path, state in sorted(self.state.items()):
             # todo: total should be derived from somewhere else, for late materialization
             d = {js: 0 for js in JobStatus}
-            for cluster_id, procs in state.items():
-                for proc_status in procs.values():
+            live_job_ids = []
+            for cluster_id, proc_statuses in state.items():
+                for proc_status in proc_statuses.values():
                     d[proc_status] += 1
+
+                live_proc_ids = [
+                    p
+                    for p, status in proc_statuses.items()
+                    if status is not JobStatus.REMOVED
+                ]
+
+                live_job_ids.append("{}.x".format(cluster_id))
+
             d["TOTAL"] = sum(d.values())
             d["EVENT_LOG"] = normalize_path(event_log_path)
+            d["ACTIVE_JOB_IDS"] = ", ".join(live_job_ids)
             rows.append(d)
 
         dont_include = set()
@@ -242,7 +255,7 @@ ALWAYS_INCLUDE = {
     "TOTAL",
 }
 
-TABLE_ALIGNMENT = {"EVENT_LOG": "ljust", "TOTAL": "rjust"}
+TABLE_ALIGNMENT = {"EVENT_LOG": "ljust", "TOTAL": "rjust", "ACTIVE_JOB_IDS": "ljust"}
 for k in JobStatus:
     TABLE_ALIGNMENT[k] = "rjust"
 
@@ -308,15 +321,17 @@ if __name__ == "__main__":
 
     schedd = htcondor.Schedd()
 
-    sub = htcondor.Submit(
-        dict(
-            executable="/bin/sleep",
-            arguments="1",
-            hold=False,
-            log=os.path.join(os.getcwd(), "$(Cluster).log"),
-        )
-    )
     for x in range(1, 6):
+        sub = htcondor.Submit(
+            dict(
+                executable="/bin/sleep",
+                arguments="1",
+                hold=False,
+                log=os.path.join(os.getcwd(), "{}.log".format(x)),
+            )
+        )
+        with schedd.transaction() as txn:
+            sub.queue(txn, random.randint(1, 10))
         with schedd.transaction() as txn:
             sub.queue(txn, random.randint(1, 10))
 
