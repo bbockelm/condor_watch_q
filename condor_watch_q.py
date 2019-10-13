@@ -183,6 +183,7 @@ class JobStateTracker:
     def table_by_event_log(self):
         headers = [EVENT_LOG] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
         rows = []
+        event_log_names = normalize_paths(self.state.keys())
         for event_log_path, state in sorted(self.state.items()):
             # todo: total should be derived from somewhere else, for late materialization
             d = {js: 0 for js in JobStatus}
@@ -207,7 +208,7 @@ class JobStateTracker:
                     live_job_ids.append(x)
 
             d[TOTAL] = sum(d.values())
-            d[EVENT_LOG] = normalize_path(event_log_path)
+            d[EVENT_LOG] = event_log_names[event_log_path]
             d[ACTIVE_JOBS] = ", ".join(live_job_ids)
             rows.append(d)
 
@@ -224,12 +225,30 @@ class JobStateTracker:
         return table(headers=headers, rows=rows, alignment=TABLE_ALIGNMENT)
 
 
-def normalize_path(path):
-    try:
-        relative_to_user_home = os.path.relpath(path, os.getcwd())
-        return os.path.join("~", relative_to_user_home)
-    except OSError:
-        return path
+def normalize_paths(paths):
+    d = {}
+    for path in paths:
+        abs = os.path.abspath(path)
+        home_dir = os.path.expanduser("~")
+        cwd = os.getcwd()
+        if not abs.startswith(home_dir):
+            d[path] = abs
+            continue
+
+        relative_to_user_home = os.path.relpath(path, home_dir)
+        if cwd == home_dir:
+            d[path] = os.path.join("~", relative_to_user_home)
+            continue
+
+        relative_to_cwd = os.path.relpath(path, cwd)
+        normalized = (
+            os.path.join(".", relative_to_cwd)
+            if not relative_to_cwd.startswith("../")
+            else os.path.join("~", relative_to_user_home)
+        )
+        d[path] = normalized
+
+    return d
 
 
 class JobStatus(enum.Enum):
@@ -332,13 +351,20 @@ if __name__ == "__main__":
     schedd = htcondor.Schedd()
 
     for x in range(1, 6):
-        sub = htcondor.Submit(
-            dict(
-                executable="/bin/sleep",
-                arguments="1",
-                hold=False,
-                log=os.path.join(os.getcwd(), "{}.log".format(x)),
+        log = os.path.join(os.getcwd(), "{}.log".format(x))
+
+        if x == 2:
+            log = os.path.join(
+                os.getcwd(), "deeply", "nested", "path", "to", "{}.log".format(x)
             )
+
+        try:
+            os.makedirs(os.path.dirname(log))
+        except OSError:
+            pass
+
+        sub = htcondor.Submit(
+            dict(executable="/bin/sleep", arguments="1", hold=False, log=log)
         )
         with schedd.transaction() as txn:
             sub.queue(txn, random.randint(1, 10))
@@ -347,5 +373,9 @@ if __name__ == "__main__":
 
     os.system("condor_q")
     print()
+
+    os.chdir(os.path.join(os.getcwd(), "deeply", "nested"))
+    # os.chdir(os.path.expanduser("~"))
+    print(os.getcwd())
 
     cli()
