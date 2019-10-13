@@ -161,6 +161,11 @@ def query(constraint, projection=None):
     return ads
 
 
+TOTAL = "TOTAL"
+ACTIVE_JOBS = "ACTIVE_JOBS"
+EVENT_LOG = "EVENT_LOG"
+
+
 class JobStateTracker:
     def __init__(self, event_log_paths):
         self.event_readers = {
@@ -176,9 +181,7 @@ class JobStateTracker:
                     self.state[event_log_path][event.cluster][event.proc] = new_status
 
     def table_by_event_log(self):
-        headers = (
-            ["EVENT_LOG"] + list(JobStatus.ordered()) + ["TOTAL", "ACTIVE_JOB_IDS"]
-        )
+        headers = [EVENT_LOG] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
         rows = []
         for event_log_path, state in sorted(self.state.items()):
             # todo: total should be derived from somewhere else, for late materialization
@@ -191,14 +194,21 @@ class JobStateTracker:
                 live_proc_ids = [
                     p
                     for p, status in proc_statuses.items()
-                    if status is not JobStatus.REMOVED
+                    if status not in (JobStatus.COMPLETED, JobStatus.REMOVED)
                 ]
 
-                live_job_ids.append("{}.x".format(cluster_id))
+                if len(live_proc_ids) > 0:
+                    if len(live_proc_ids) == 1:
+                        x = "{}.{}".format(cluster_id, live_proc_ids[0])
+                    else:
+                        x = "{}.{}-{}".format(
+                            cluster_id, min(live_proc_ids), max(live_proc_ids)
+                        )
+                    live_job_ids.append(x)
 
-            d["TOTAL"] = sum(d.values())
-            d["EVENT_LOG"] = normalize_path(event_log_path)
-            d["ACTIVE_JOB_IDS"] = ", ".join(live_job_ids)
+            d[TOTAL] = sum(d.values())
+            d[EVENT_LOG] = normalize_path(event_log_path)
+            d[ACTIVE_JOBS] = ", ".join(live_job_ids)
             rows.append(d)
 
         dont_include = set()
@@ -251,11 +261,11 @@ ALWAYS_INCLUDE = {
     JobStatus.IDLE,
     JobStatus.RUNNING,
     JobStatus.COMPLETED,
-    "EVENT_LOG",
-    "TOTAL",
+    EVENT_LOG,
+    TOTAL,
 }
 
-TABLE_ALIGNMENT = {"EVENT_LOG": "ljust", "TOTAL": "rjust", "ACTIVE_JOB_IDS": "ljust"}
+TABLE_ALIGNMENT = {EVENT_LOG: "ljust", TOTAL: "rjust", ACTIVE_JOBS: "ljust"}
 for k in JobStatus:
     TABLE_ALIGNMENT[k] = "rjust"
 
