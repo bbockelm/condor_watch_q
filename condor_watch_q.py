@@ -51,17 +51,16 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--users", "--user", "-u", nargs="+", help="Which users to track."
+        "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
-    parser.add_argument(
-        "--clusters", "--cluster", "-c", nargs="+", help="Which cluster IDs to track."
-    )
-    parser.add_argument(
-        "--files", "--file", "-f", nargs="+", help="Which event logs to track."
-    )
-    parser.add_argument(
-        "--debug", action="store_true", help="Turn on HTCondor debug printing."
-    )
+
+    # select which jobs to track
+    parser.add_argument("-users", nargs="+", help="Which users to track.")
+    parser.add_argument("-clusters", nargs="+", help="Which cluster IDs to track.")
+    parser.add_argument("-files", nargs="+", help="Which event logs to track.")
+
+    # select when (if) to exit
+    parser.add_argument("-exit", nargs=2, action="append")
 
     args = parser.parse_args()
 
@@ -84,6 +83,19 @@ def cli():
 
     state = JobStateTracker(event_logs)
 
+    exit_checks = []
+    for grouper, checker in args.exit:
+        disp = "{} {}".format(grouper, checker)
+        exit_grouper = {"all": all, "any": any, "none": lambda _: not any(_)}[
+            grouper.lower()
+        ]
+        exit_check = {
+            "active": lambda s: s in ACTIVE_STATES,
+            "done": lambda s: s is JobStatus.COMPLETED,
+            "held": lambda s: s is JobStatus.HELD,
+        }[checker.lower()]
+        exit_checks.append((exit_grouper, exit_check, disp))
+
     try:
         msg = None
         while True:
@@ -102,18 +114,19 @@ def cli():
                 clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
                 sys.stdout.write(move + clear + move)
 
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             msg = state.table_by_event_log().splitlines()
-            msg += [
-                "",
-                "Updated at {}".format(
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ),
-            ]
+            msg += ["", "Updated at {}".format(now)]
             msg = "\n".join(msg)
 
             print(msg)
 
-            time.sleep(1)
+            for grouper, checker, disp in exit_checks:
+                if grouper((checker(s) for _, s in state.job_states())):
+                    print('Exiting because of condition "{}" at {}'.format(disp, now))
+                    sys.exit(0)
+
+            time.sleep(2)
     except KeyboardInterrupt:
         sys.exit(0)
 
@@ -172,6 +185,12 @@ class JobStateTracker:
             p: htcondor.JobEventLog(p).events(0) for p in event_log_paths
         }
         self.state = collections.defaultdict(lambda: collections.defaultdict(dict))
+
+    def job_states(self):
+        for event_log, clusters in self.state.items():
+            for cluster_id, procs in clusters.items():
+                for proc_id, job_status in procs.items():
+                    yield ((cluster_id, proc_id), job_status)
 
     def process_events(self):
         for event_log_path, events in self.event_readers.items():
@@ -276,6 +295,14 @@ class JobStatus(enum.Enum):
         )
 
 
+ACTIVE_STATES = {
+    JobStatus.IDLE,
+    JobStatus.RUNNING,
+    JobStatus.TRANSFERRING_OUTPUT,
+    JobStatus.HELD,
+    JobStatus.SUSPENDED,
+}
+
 ALWAYS_INCLUDE = {
     JobStatus.IDLE,
     JobStatus.RUNNING,
@@ -364,18 +391,26 @@ if __name__ == "__main__":
             pass
 
         sub = htcondor.Submit(
-            dict(executable="/bin/sleep", arguments="1", hold=False, log=log)
+            dict(
+                executable="/bin/sleep",
+                arguments="1",
+                hold=False,
+                log=log,
+                transfer_input_files="nope" if x == 4 else "",
+            )
         )
         with schedd.transaction() as txn:
-            sub.queue(txn, random.randint(1, 10))
+            sub.queue(txn, random.randint(1, 5))
         with schedd.transaction() as txn:
-            sub.queue(txn, random.randint(1, 10))
+            sub.queue(txn, random.randint(1, 5))
 
     os.system("condor_q")
     print()
 
     os.chdir(os.path.join(os.getcwd(), "deeply", "nested"))
     # os.chdir(os.path.expanduser("~"))
-    print(os.getcwd())
+    print("Running from", os.getcwd())
+    print("-" * 40)
+    print()
 
     cli()
