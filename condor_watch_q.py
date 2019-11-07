@@ -67,6 +67,9 @@ def parse_args():
     if all((_ is None for _ in (args.users, args.clusters, args.files))):
         args.users = [getpass.getuser()]
 
+    if args.exit is None:
+        args.exit = []
+
     return args
 
 
