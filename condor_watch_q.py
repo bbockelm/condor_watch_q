@@ -22,8 +22,6 @@ import collections
 import getpass
 import itertools
 import sys
-import os
-import re
 import textwrap
 import time
 import enum
@@ -32,19 +30,31 @@ import datetime
 import htcondor
 import classad
 
-PROJECTION = ["ClusterId", "Owner", "UserLog"]
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="condor_watch_q",
         description=textwrap.dedent(
             """
-            Track the status of HTCondor jobs without repeatedly querying the 
-            Schedd.
+            Track the status of HTCondor jobs over time without repeatedly 
+            querying the Schedd.
             
-            If no users, cluster ids, or event logs are passed, condor_watch_q will 
+            If no users, cluster ids, or event logs are given, condor_watch_q will 
             default to tracking all of the current user's jobs.
+            
+            Any option beginning with a single "-" can be specified by its unique
+            prefix. For example, these commands are all equivalent:
+            
+                condor_watch_q -clusters 12345
+                condor_watch_q -clu 12345
+                condor_watch_q -c 12345
+                
+            By default, condor_watch_q will not exit on its own. You can tell it
+            to exit when certain conditions are met. For example, to exit when
+            all of the jobs it is tracking are done (with exit code 0) or when any
+            job is held (with exit code 1), run
+            
+                condor_watch_q -exit all done 0 -exit any held 1
             """
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -55,22 +65,70 @@ def parse_args():
     )
 
     # select which jobs to track
-    parser.add_argument("-users", nargs="+", help="Which users to track.")
-    parser.add_argument("-clusters", nargs="+", help="Which cluster IDs to track.")
-    parser.add_argument("-files", nargs="+", help="Which event logs to track.")
+    parser.add_argument(
+        "-users", nargs="+", metavar="USER", help="Which users to track."
+    )
+    parser.add_argument(
+        "-clusters", nargs="+", metavar="CLUSTER_ID", help="Which cluster IDs to track."
+    )
+    parser.add_argument(
+        "-files", nargs="+", metavar="FILE", help="Which event logs to track."
+    )
 
     # select when (if) to exit
-    parser.add_argument("-exit", nargs=2, action="append")
+    parser.add_argument(
+        "-exit",
+        nargs=3,
+        action=ValidateExitConditions,
+        metavar=("GROUPER", "JOB_STATUS", "EXIT_CODE"),
+        help=textwrap.dedent(
+            """
+            Specify conditions under which condor_watch_q should exit. 
+            To specify additional conditions, pass this option again.
+            
+            GROUPER is one of {{ {} }}.
+            
+            JOB_STATUS is one of {{ {} }}.
+            """.format(
+                ", ".join(EXIT_GROUPERS.keys()), ", ".join(EXIT_JOB_STATUS_CHECK.keys())
+            )
+        ),
+    )
 
     args = parser.parse_args()
 
-    if all((_ is None for _ in (args.users, args.clusters, args.files))):
-        args.users = [getpass.getuser()]
-
-    if args.exit is None:
-        args.exit = []
-
     return args
+
+
+class ValidateExitConditions(argparse.Action):
+    def __call__(self, parser, args, values, option_string=None):
+        grouper, status, exit_code = values
+
+        if grouper not in EXIT_GROUPERS:
+            parser.error(
+                message='invalid GROUPER "{}", must be one of {{ {} }}'.format(
+                    grouper, ", ".join(EXIT_GROUPERS.keys())
+                )
+            )
+
+        if status not in EXIT_JOB_STATUS_CHECK:
+            parser.error(
+                message='invalid JOB_STATUS "{}", must be one of {{ {} }}'.format(
+                    status, ", ".join(EXIT_JOB_STATUS_CHECK.keys())
+                )
+            )
+
+        try:
+            exit_code = int(exit_code)
+        except ValueError:
+            parser.error(
+                message='EXIT_CODE must be an integer, but was "{}"'.format(exit_code)
+            )
+
+        if getattr(args, self.dest, None) is None:
+            setattr(args, self.dest, [])
+
+        getattr(args, self.dest).append((grouper, status, exit_code))
 
 
 def cli():
@@ -79,7 +137,30 @@ def cli():
     if args.debug:
         htcondor.enable_debug()
 
-    cluster_ids, event_logs = find_job_event_logs(args.users, args.clusters, args.files)
+    return watch_q(
+        users=args.users,
+        cluster_ids=args.clusters,
+        event_logs=args.files,
+        exit_conditions=args.exit,
+    )
+
+
+EXIT_GROUPERS = {"all": all, "any": any, "none": lambda _: not any(_)}
+EXIT_JOB_STATUS_CHECK = {
+    "active": lambda s: s in ACTIVE_STATES,
+    "done": lambda s: s is JobStatus.COMPLETED,
+    "idle": lambda s: s is JobStatus.IDLE,
+    "held": lambda s: s is JobStatus.HELD,
+}
+
+
+def watch_q(users=None, cluster_ids=None, event_logs=None, exit_conditions=None):
+    if users is None and cluster_ids is None and event_logs is None:
+        users = [getpass.getuser()]
+    if exit_conditions is None:
+        exit_conditions = []
+
+    cluster_ids, event_logs = find_job_event_logs(users, cluster_ids, event_logs)
     if cluster_ids is not None and len(cluster_ids) == 0:
         print("No jobs found")
         sys.exit(0)
@@ -87,17 +168,11 @@ def cli():
     state = JobStateTracker(event_logs)
 
     exit_checks = []
-    for grouper, checker in args.exit:
+    for grouper, checker, exit_code in exit_conditions:
         disp = "{} {}".format(grouper, checker)
-        exit_grouper = {"all": all, "any": any, "none": lambda _: not any(_)}[
-            grouper.lower()
-        ]
-        exit_check = {
-            "active": lambda s: s in ACTIVE_STATES,
-            "done": lambda s: s is JobStatus.COMPLETED,
-            "held": lambda s: s is JobStatus.HELD,
-        }[checker.lower()]
-        exit_checks.append((exit_grouper, exit_check, disp))
+        exit_grouper = EXIT_GROUPERS[grouper.lower()]
+        exit_check = EXIT_JOB_STATUS_CHECK[checker.lower()]
+        exit_checks.append((exit_grouper, exit_check, exit_code, disp))
 
     try:
         msg = None
@@ -124,14 +199,21 @@ def cli():
 
             print(msg)
 
-            for grouper, checker, disp in exit_checks:
+            for grouper, checker, exit_code, disp in exit_checks:
                 if grouper((checker(s) for _, s in state.job_states())):
-                    print('Exiting because of condition "{}" at {}'.format(disp, now))
-                    sys.exit(0)
+                    print(
+                        'Exiting with code {} because of condition "{}" at {}'.format(
+                            exit_code, disp, now
+                        )
+                    )
+                    sys.exit(exit_code)
 
             time.sleep(2)
     except KeyboardInterrupt:
         sys.exit(0)
+
+
+PROJECTION = ["ClusterId", "Owner", "UserLog"]
 
 
 def find_job_event_logs(users, cluster_ids, files):
