@@ -58,10 +58,14 @@ def parse_args():
             """
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
     )
 
     parser.add_argument(
-        "-debug", action="store_true", help="Turn on HTCondor debug printing."
+        "-help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="Show this help message and exit.",
     )
 
     # select which jobs to track
@@ -85,11 +89,13 @@ def parse_args():
             Specify conditions under which condor_watch_q should exit. 
             To specify additional conditions, pass this option again.
             
-            GROUPER is one of {{ {} }}.
+            GROUPER is one of {{{}}}.
             
-            JOB_STATUS is one of {{ {} }}.
+            JOB_STATUS is one of {{{}}}.
             
             "active" means "in the queue".
+            
+            To specify multiple exit conditions, pass this option multiple times.
             """.format(
                 ", ".join(EXIT_GROUPERS.keys()), ", ".join(EXIT_JOB_STATUS_CHECK.keys())
             )
@@ -99,7 +105,7 @@ def parse_args():
     parser.add_argument(
         "-abbreviate",
         action="store_true",
-        help="If passed, path components will be abbreviated to the shortest unique prefix.",
+        help="Abbreviate path components to the shortest unique prefix.",
     )
 
     parser.add_argument(
@@ -108,6 +114,10 @@ def parse_args():
         default="log",
         choices=("log", "cluster"),
         help="Select what to group jobs by.",
+    )
+
+    parser.add_argument(
+        "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
 
     args = parser.parse_args()
@@ -533,7 +543,6 @@ TABLE_ALIGNMENT = {
 }
 for k in JobStatus:
     TABLE_ALIGNMENT[k] = "rjust"
-
 
 JOB_EVENT_STATUS_TRANSITIONS = {
     htcondor.JobEventType.SUBMIT: JobStatus.IDLE,
