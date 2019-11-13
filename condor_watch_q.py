@@ -254,15 +254,20 @@ def find_job_event_logs(users, cluster_ids, files):
 
     cluster_ids = set()
     event_logs = set()
+    already_warned_missing_log = set()
     for ad in ads:
         cluster_id = ad["ClusterId"]
         cluster_ids.add(cluster_id)
         try:
             event_logs.add(os.path.abspath(ad["UserLog"]))
         except KeyError:
+            if cluster_id in already_warned_missing_log:
+                continue
+
             print(
-                "Warning: cluster {} does not have a job event log".format(cluster_id)
+                "WARNING: cluster {} does not have a job event log".format(cluster_id)
             )
+            already_warned_missing_log.add(cluster_id)
 
     for file in files:
         event_logs.add(os.path.abspath(file))
@@ -543,22 +548,25 @@ if __name__ == "__main__":
                 "veryveryveryberrylong",
                 "{}.log".format(x),
             )
-        print(log)
+        if x == 4:
+            log = None
 
-        try:
-            os.makedirs(os.path.dirname(log))
-        except OSError:
-            pass
+        if log is not None:
+            try:
+                os.makedirs(os.path.dirname(log))
+            except OSError:
+                pass
 
-        sub = htcondor.Submit(
-            dict(
-                executable="/bin/sleep",
-                arguments="1",
-                hold=False,
-                log=log,
-                transfer_input_files="nope" if x == 4 else "",
-            )
+        s = dict(
+            executable="/bin/sleep",
+            arguments="1",
+            hold=False,
+            transfer_input_files="nope" if x == 4 else "",
         )
+        if log is not None:
+            s["log"] = log
+
+        sub = htcondor.Submit(s)
         with schedd.transaction() as txn:
             sub.queue(txn, random.randint(1, 5))
         with schedd.transaction() as txn:
