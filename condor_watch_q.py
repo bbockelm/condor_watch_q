@@ -78,9 +78,8 @@ def parse_args():
     # select when (if) to exit
     parser.add_argument(
         "-exit",
-        nargs=3,
-        action=ValidateExitConditions,
-        metavar=("GROUPER", "JOB_STATUS", "EXIT_CODE"),
+        action=ExitConditions,
+        metavar="GROUPER,JOB_STATUS[,EXIT_CODE]",
         help=textwrap.dedent(
             """
             Specify conditions under which condor_watch_q should exit. 
@@ -116,9 +115,16 @@ def parse_args():
     return args
 
 
-class ValidateExitConditions(argparse.Action):
+class ExitConditions(argparse.Action):
     def __call__(self, parser, args, values, option_string=None):
-        grouper, status, exit_code = values
+        v = values.split(",")
+        if len(v) == 3:
+            grouper, status, exit_code = v
+        elif len(v) == 2:
+            grouper, status = v
+            exit_code = 0
+        else:
+            parser.error(message="invalid -exit specification")
 
         if grouper not in EXIT_GROUPERS:
             parser.error(
@@ -304,7 +310,7 @@ def query(constraint, projection=None):
 TOTAL = "TOTAL"
 ACTIVE_JOBS = "ACTIVE_JOBS"
 EVENT_LOG = "LOG"
-CLUSTER_ID = "CLUSTERID"
+CLUSTER_ID = "CLUSTER"
 
 
 class JobStateTracker:
@@ -519,7 +525,12 @@ ALWAYS_INCLUDE = {
     TOTAL,
 }
 
-TABLE_ALIGNMENT = {EVENT_LOG: "ljust", TOTAL: "rjust", ACTIVE_JOBS: "ljust"}
+TABLE_ALIGNMENT = {
+    EVENT_LOG: "ljust",
+    CLUSTER_ID: "ljust",
+    TOTAL: "rjust",
+    ACTIVE_JOBS: "ljust",
+}
 for k in JobStatus:
     TABLE_ALIGNMENT[k] = "rjust"
 
@@ -580,38 +591,39 @@ def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None)
 if __name__ == "__main__":
     import os
     import random
-
-    htcondor.enable_debug()
+    import time
 
     schedd = htcondor.Schedd()
 
     home = os.path.expanduser("~")
 
-    for x in range(1, 6):
-        log = os.path.join(home, "{}.log".format(x))
+    t = str(int(time.time()))
 
-        if x == 2:
-            log = os.path.join(
-                home,
-                "deeply",
-                "nested",
-                "path",
-                "to",
-                "veryveryveryveryveryveryveryveryverylong",
-                "{}.log".format(x),
-            )
-        if x == 3:
-            log = os.path.join(
-                home,
-                "deeply",
-                "nested",
-                "path",
-                "to",
-                "veryveryveryberrylong",
-                "{}.log".format(x),
-            )
-        if x == 4:
-            log = None
+    for x in range(1, 6):
+        log = os.path.join(home, t, "{}.log".format(x))
+
+        # if x == 2:
+        #     log = os.path.join(
+        #         home,
+        #         "deeply",
+        #         "nested",
+        #         "path",
+        #         "to",
+        #         "veryveryveryveryveryveryveryveryverylong",
+        #         "{}.log".format(x),
+        #     )
+        # if x == 3:
+        #     log = os.path.join(
+        #         home,
+        #         "deeply",
+        #         "nested",
+        #         "path",
+        #         "to",
+        #         "veryveryveryberrylong",
+        #         "{}.log".format(x),
+        #     )
+        # if x == 4:
+        #     log = None
 
         if log is not None:
             try:
@@ -637,10 +649,9 @@ if __name__ == "__main__":
     os.system("condor_q")
     print()
 
-    os.chdir(os.path.join(home, "deeply", "nested"))
-    # os.chdir(os.path.expanduser("~"))
+    # os.chdir(os.path.join(home, "deeply", "nested"))
+    os.chdir(os.path.expanduser("~"))
     print("Running from", os.getcwd())
     print("-" * 40)
-    print()
 
     cli()
