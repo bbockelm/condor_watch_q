@@ -103,6 +103,14 @@ def parse_args():
         help="If passed, path components will be abbreviated to the shortest unique prefix.",
     )
 
+    parser.add_argument(
+        "-groupby",
+        action="store",
+        default="log",
+        choices=("log", "cluster"),
+        help="Select what to group jobs by.",
+    )
+
     args = parser.parse_args()
 
     return args
@@ -151,6 +159,7 @@ def cli():
         event_logs=args.files,
         exit_conditions=args.exit,
         abbreviate_path_components=args.abbreviate,
+        groupby=args.groupby,
     )
 
 
@@ -169,6 +178,7 @@ def watch_q(
     event_logs=None,
     exit_conditions=None,
     abbreviate_path_components=False,
+    groupby="log",
 ):
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
@@ -208,16 +218,26 @@ def watch_q(
                 sys.stdout.write(move + clear + move)
 
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            msg = state.table_by_event_log(
-                abbreviate_path_components=abbreviate_path_components
-            ).splitlines()
+            if groupby == "log":
+                msg = state.table_by_event_log(
+                    abbreviate_path_components=abbreviate_path_components
+                )
+            elif groupby == "cluster":
+                msg = state.table_by_cluster_id()
+            else:
+                raise ValueError(
+                    'groupby must be one of {{ log, cluster }}, but was "{}"'.format(
+                        groupby
+                    )
+                )
+            msg = msg.splitlines()
             msg += ["", "Updated at {}".format(now)]
             msg = "\n".join(msg)
 
             print(msg)
 
             for grouper, checker, exit_code, disp in exit_checks:
-                if grouper((checker(s) for _, s in state.job_states())):
+                if grouper((checker(s) for _, _, s in state.job_states())):
                     print(
                         'Exiting with code {} because of condition "{}" at {}'.format(
                             exit_code, disp, now
@@ -283,7 +303,8 @@ def query(constraint, projection=None):
 
 TOTAL = "TOTAL"
 ACTIVE_JOBS = "ACTIVE_JOBS"
-EVENT_LOG = "EVENT_LOG"
+EVENT_LOG = "LOG"
+CLUSTER_ID = "CLUSTERID"
 
 
 class JobStateTracker:
@@ -297,7 +318,7 @@ class JobStateTracker:
         for event_log, clusters in self.state.items():
             for cluster_id, procs in clusters.items():
                 for proc_id, job_status in procs.items():
-                    yield ((cluster_id, proc_id), job_status)
+                    yield (cluster_id, proc_id, job_status)
 
     def process_events(self):
         for event_log_path, events in self.event_readers.items():
@@ -322,9 +343,7 @@ class JobStateTracker:
                     d[proc_status] += 1
 
                 live_proc_ids = [
-                    p
-                    for p, status in proc_statuses.items()
-                    if status not in (JobStatus.COMPLETED, JobStatus.REMOVED)
+                    p for p, status in proc_statuses.items() if status in ACTIVE_STATES
                 ]
 
                 if len(live_proc_ids) > 0:
@@ -340,6 +359,49 @@ class JobStateTracker:
             d[EVENT_LOG] = event_log_names[event_log_path]
             d[ACTIVE_JOBS] = ", ".join(live_job_ids)
             rows.append(d)
+
+        dont_include = set()
+        for h in headers:
+            if all((row[h] == 0 for row in rows)):
+                dont_include.add(h)
+        dont_include -= ALWAYS_INCLUDE
+        headers = [h for h in headers if h not in dont_include]
+        for d in dont_include:
+            for row in rows:
+                row.pop(d)
+
+        return table(headers=headers, rows=rows, alignment=TABLE_ALIGNMENT)
+
+    def table_by_cluster_id(self):
+        headers = [CLUSTER_ID] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
+        rows = []
+        for event_log_path, state in sorted(self.state.items()):
+            # todo: total should be derived from somewhere else, for late materialization
+            for cluster_id, proc_statuses in state.items():
+                d = {js: 0 for js in JobStatus}
+                live_job_ids = []
+                for proc_status in proc_statuses.values():
+                    d[proc_status] += 1
+
+                live_proc_ids = [
+                    p for p, status in proc_statuses.items() if status in ACTIVE_STATES
+                ]
+
+                if len(live_proc_ids) > 0:
+                    if len(live_proc_ids) == 1:
+                        x = "{}.{}".format(cluster_id, live_proc_ids[0])
+                    else:
+                        x = "{}.{}-{}".format(
+                            cluster_id, min(live_proc_ids), max(live_proc_ids)
+                        )
+                    live_job_ids.append(x)
+
+                d[TOTAL] = sum(d.values())
+                d[CLUSTER_ID] = cluster_id
+                d[ACTIVE_JOBS] = ", ".join(live_job_ids)
+                rows.append(d)
+
+        rows.sort(key=lambda r: r[CLUSTER_ID])
 
         dont_include = set()
         for h in headers:
