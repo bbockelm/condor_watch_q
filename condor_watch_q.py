@@ -89,10 +89,18 @@ def parse_args():
             GROUPER is one of {{ {} }}.
             
             JOB_STATUS is one of {{ {} }}.
+            
+            "active" means "in the queue".
             """.format(
                 ", ".join(EXIT_GROUPERS.keys()), ", ".join(EXIT_JOB_STATUS_CHECK.keys())
             )
         ),
+    )
+
+    parser.add_argument(
+        "-abbreviate",
+        action="store_true",
+        help="If passed, path components will be abbreviated to the shortest unique prefix.",
     )
 
     args = parser.parse_args()
@@ -142,6 +150,7 @@ def cli():
         cluster_ids=args.clusters,
         event_logs=args.files,
         exit_conditions=args.exit,
+        abbreviate_path_components=args.abbreviate,
     )
 
 
@@ -154,7 +163,13 @@ EXIT_JOB_STATUS_CHECK = {
 }
 
 
-def watch_q(users=None, cluster_ids=None, event_logs=None, exit_conditions=None):
+def watch_q(
+    users=None,
+    cluster_ids=None,
+    event_logs=None,
+    exit_conditions=None,
+    abbreviate_path_components=False,
+):
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
     if exit_conditions is None:
@@ -193,7 +208,9 @@ def watch_q(users=None, cluster_ids=None, event_logs=None, exit_conditions=None)
                 sys.stdout.write(move + clear + move)
 
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            msg = state.table_by_event_log().splitlines()
+            msg = state.table_by_event_log(
+                abbreviate_path_components=abbreviate_path_components
+            ).splitlines()
             msg += ["", "Updated at {}".format(now)]
             msg = "\n".join(msg)
 
@@ -284,10 +301,13 @@ class JobStateTracker:
                 if new_status is not None:
                     self.state[event_log_path][event.cluster][event.proc] = new_status
 
-    def table_by_event_log(self):
+    def table_by_event_log(self, abbreviate_path_components=False):
         headers = [EVENT_LOG] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
         rows = []
-        event_log_names = normalize_paths(self.state.keys())
+        event_log_names = {
+            k: normalize_path(k, abbreviate_path_components=abbreviate_path_components)
+            for k in self.state.keys()
+        }
         for event_log_path, state in sorted(self.state.items()):
             # todo: total should be derived from somewhere else, for late materialization
             d = {js: 0 for js in JobStatus}
@@ -329,30 +349,66 @@ class JobStateTracker:
         return table(headers=headers, rows=rows, alignment=TABLE_ALIGNMENT)
 
 
-def normalize_paths(paths):
-    d = {}
-    for path in paths:
-        abs = os.path.abspath(path)
-        home_dir = os.path.expanduser("~")
-        cwd = os.getcwd()
-        if not abs.startswith(home_dir):
-            d[path] = abs
+def normalize_path(path, abbreviate_path_components=False):
+    possibilities = []
+
+    abs = os.path.abspath(path)
+    home_dir = os.path.expanduser("~")
+    cwd = os.getcwd()
+
+    possibilities.append(abs)
+
+    relative_to_user_home = os.path.relpath(path, home_dir)
+    possibilities.append(os.path.join("~", relative_to_user_home))
+
+    relative_to_cwd = os.path.relpath(path, cwd)
+    if not relative_to_cwd.startswith("../"):  # i.e, it is not *above* the cwd
+        possibilities.append(os.path.join(".", relative_to_cwd))
+
+    if abbreviate_path_components:
+        possibilities = map(abbreviate_path, possibilities)
+
+    return min(possibilities, key=len)
+
+
+def abbreviate_path(path):
+    abbreviated_components = []
+    path_to_here = ""
+    components = split_all(path)
+    for component in components[:-1]:
+        path_to_here = os.path.expanduser(os.path.join(path_to_here, component))
+
+        if component in ("~", "."):
+            abbreviated_components.append(component)
             continue
 
-        relative_to_user_home = os.path.relpath(path, home_dir)
-        if cwd == home_dir:
-            d[path] = os.path.join("~", relative_to_user_home)
-            continue
+        contents = os.listdir(os.path.dirname(path_to_here))
+        if len(contents) == 1:
+            longest_common = ""
+        else:
+            longest_common = os.path.commonprefix(contents)
 
-        relative_to_cwd = os.path.relpath(path, cwd)
-        normalized = (
-            os.path.join(".", relative_to_cwd)
-            if not relative_to_cwd.startswith("../")
-            else os.path.join("~", relative_to_user_home)
-        )
-        d[path] = normalized
+        abbreviated_components.append(component[: len(longest_common) + 1])
 
-    return d
+    abbreviated_components.append(components[-1])
+
+    return os.path.join(*abbreviated_components)
+
+
+def split_all(path):
+    allparts = []
+    while 1:
+        parts = os.path.split(path)
+        if parts[0] == path:  # sentinel for absolute paths
+            allparts.insert(0, parts[0])
+            break
+        elif parts[1] == path:  # sentinel for relative paths
+            allparts.insert(0, parts[1])
+            break
+        else:
+            path = parts[0]
+            allparts.insert(0, parts[1])
+    return allparts
 
 
 class JobStatus(enum.Enum):
@@ -462,13 +518,32 @@ if __name__ == "__main__":
 
     schedd = htcondor.Schedd()
 
+    home = os.path.expanduser("~")
+
     for x in range(1, 6):
-        log = os.path.join(os.getcwd(), "{}.log".format(x))
+        log = os.path.join(home, "{}.log".format(x))
 
         if x == 2:
             log = os.path.join(
-                os.getcwd(), "deeply", "nested", "path", "to", "{}.log".format(x)
+                home,
+                "deeply",
+                "nested",
+                "path",
+                "to",
+                "veryveryveryveryveryveryveryveryverylong",
+                "{}.log".format(x),
             )
+        if x == 3:
+            log = os.path.join(
+                home,
+                "deeply",
+                "nested",
+                "path",
+                "to",
+                "veryveryveryberrylong",
+                "{}.log".format(x),
+            )
+        print(log)
 
         try:
             os.makedirs(os.path.dirname(log))
@@ -492,7 +567,7 @@ if __name__ == "__main__":
     os.system("condor_q")
     print()
 
-    os.chdir(os.path.join(os.getcwd(), "deeply", "nested"))
+    os.chdir(os.path.join(home, "deeply", "nested"))
     # os.chdir(os.path.expanduser("~"))
     print("Running from", os.getcwd())
     print("-" * 40)
