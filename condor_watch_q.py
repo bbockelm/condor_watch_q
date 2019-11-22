@@ -267,7 +267,7 @@ def watch_q(
         sys.exit(0)
 
 
-PROJECTION = ["ClusterId", "Owner", "UserLog"]
+PROJECTION = ["ClusterId", "Owner", "UserLog", "Iwd"]
 
 
 def find_job_event_logs(users, cluster_ids, files):
@@ -295,9 +295,16 @@ def find_job_event_logs(users, cluster_ids, files):
     for ad in ads:
         cluster_id = ad["ClusterId"]
         cluster_ids.add(cluster_id)
+        cluster_log = None
         try:
-            event_logs.add(os.path.abspath(ad["UserLog"]))
+            if os.path.isabs(ad["UserLog"]):
+                cluster_log = ad["UserLog"]
+            elif "Iwd" in ad:
+                cluster_log = os.path.join(ad["Iwd"], ad["UserLog"])
         except KeyError:
+            pass
+
+        if cluster_log is None:
             if cluster_id in already_warned_missing_log:
                 continue
 
@@ -305,6 +312,17 @@ def find_job_event_logs(users, cluster_ids, files):
                 "WARNING: cluster {} does not have a job event log".format(cluster_id)
             )
             already_warned_missing_log.add(cluster_id)
+        elif not os.access(cluster_log, os.R_OK):
+            if cluster_id in already_warned_missing_log:
+                continue
+
+            print(
+                "WARNING: cluster {} has an unreadable log file at {} (permission denied); ignoring".format(cluster_id, cluster_log)
+            )
+            already_warned_missing_log.add(cluster_id)
+
+        else:
+            event_logs.add(cluster_log)
 
     for file in files:
         event_logs.add(os.path.abspath(file))
