@@ -357,10 +357,16 @@ class JobStateTracker:
 
     def process_events(self):
         for event_log_path, events in self.event_readers.items():
-            for event in events:
-                new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
-                if new_status is not None:
-                    self.state[event_log_path][event.cluster][event.proc] = new_status
+            event = "(Unknown)"
+            try:
+                for event in events:
+                    new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
+                    if new_status is not None:
+                        self.state[event_log_path][event.cluster][event.proc] = new_status
+            except IOError:
+                # TODO: how should we handle this?  Forget all our jobs?  Warn user?
+                print("Error when reading file {}; last good event processed was {}.".format(event_log_path, event), file=sys.stderr)
+                raise
 
     def table_by_event_log(self, abbreviate_path_components=False):
         headers = [EVENT_LOG] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
