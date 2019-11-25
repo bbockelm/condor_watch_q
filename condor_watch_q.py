@@ -355,7 +355,7 @@ class JobStateTracker:
             try:
                 reader = htcondor.JobEventLog(event_log_path).events(0)
                 event_readers[event_log_path] = reader
-            except OSError as e:
+            except (OSError, IOError) as e:
                 print(
                     "Could not open event log at {} for reading, so it will be ignored. Reason: {}".format(
                         event_log_path, e
@@ -703,6 +703,7 @@ def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None)
 
 
 if __name__ == "__main__":
+    htcondor.enable_debug()
     import random
 
     schedd = htcondor.Schedd()
