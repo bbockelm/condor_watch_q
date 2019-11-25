@@ -309,36 +309,25 @@ def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
         cluster_id = ad["ClusterId"]
         cluster_ids.add(cluster_id)
         batch_names[cluster_id] = ad.get("JobBatchName", "ID: {}".format(cluster_id))
-        cluster_log = None
+
         try:
-            if os.path.isabs(ad["UserLog"]):
-                cluster_log = ad["UserLog"]
-            elif "Iwd" in ad:
-                cluster_log = os.path.join(ad["Iwd"], ad["UserLog"])
+            log_path = ad["UserLog"]
         except KeyError:
-            pass
-
-        if cluster_log is None:
-            if cluster_id in already_warned_missing_log:
-                continue
-
-            print(
-                "WARNING: cluster {} does not have a job event log".format(cluster_id)
-            )
-            already_warned_missing_log.add(cluster_id)
-        elif not os.access(cluster_log, os.R_OK):
-            if cluster_id in already_warned_missing_log:
-                continue
-
-            print(
-                "WARNING: cluster {} has an unreadable log file at {} (permission denied); ignoring".format(
-                    cluster_id, cluster_log
+            if cluster_id not in already_warned_missing_log:
+                print(
+                    "WARNING: cluster {} does not have a job event log file (set log=<path> in the submit description)".format(
+                        cluster_id
+                    )
                 )
-            )
-            already_warned_missing_log.add(cluster_id)
+                already_warned_missing_log.add(cluster_id)
+            continue
 
-        else:
-            event_logs.add(cluster_log)
+        # if the path is not absolute, try to make it absolute using the
+        # job's initial working directory
+        if not os.path.isabs(log_path):
+            log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
+
+        event_logs.add(log_path)
 
     for file in files:
         event_logs.add(os.path.abspath(file))
@@ -361,9 +350,19 @@ BATCH_NAME = "BATCH"
 
 class JobStateTracker:
     def __init__(self, event_log_paths, batch_names):
-        self.event_readers = {
-            p: htcondor.JobEventLog(p).events(0) for p in event_log_paths
-        }
+        event_readers = {}
+        for event_log_path in event_log_paths:
+            try:
+                reader = htcondor.JobEventLog(event_log_path).events(0)
+                event_readers[event_log_path] = reader
+            except OSError as e:
+                print(
+                    "Could not open event log at {} for reading, so it will be ignored. Reason: {}".format(
+                        event_log_path, e
+                    )
+                )
+
+        self.event_readers = event_readers
         self.state = collections.defaultdict(lambda: collections.defaultdict(dict))
 
         self.batch_names = batch_names
@@ -491,7 +490,6 @@ class JobStateTracker:
         live_job_ids = collections.defaultdict(list)
         for event_log_path, state in sorted(self.state.items()):
             for cluster_id, proc_statuses in state.items():
-                batch_name = self.batch_names[cluster_id]
                 try:
                     batch_name = self.batch_names[cluster_id]
                 except KeyError:
