@@ -171,6 +171,7 @@ def cli():
     args = parse_args()
 
     if args.debug:
+        print("Enabling HTCondor debug output...", file = sys.stderr)
         htcondor.enable_debug()
 
     return watch_q(
@@ -317,7 +318,8 @@ def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
                 print(
                     "WARNING: cluster {} does not have a job event log file (set log=<path> in the submit description)".format(
                         cluster_id
-                    )
+                    ),
+                    file=sys.stderr,
                 )
                 already_warned_missing_log.add(cluster_id)
             continue
@@ -357,9 +359,10 @@ class JobStateTracker:
                 event_readers[event_log_path] = reader
             except (OSError, IOError) as e:
                 print(
-                    "Could not open event log at {} for reading, so it will be ignored. Reason: {}".format(
+                    "WARNING: Could not open event log at {} for reading, so it will be ignored. Reason: {}".format(
                         event_log_path, e
-                    )
+                    ),
+                    file=sys.stderr,
                 )
 
         self.event_readers = event_readers
@@ -703,7 +706,6 @@ def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None)
 
 
 if __name__ == "__main__":
-    htcondor.enable_debug()
     import random
 
     schedd = htcondor.Schedd()
