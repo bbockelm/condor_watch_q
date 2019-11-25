@@ -317,7 +317,9 @@ def find_job_event_logs(users, cluster_ids, files):
                 continue
 
             print(
-                "WARNING: cluster {} has an unreadable log file at {} (permission denied); ignoring".format(cluster_id, cluster_log)
+                "WARNING: cluster {} has an unreadable log file at {} (permission denied); ignoring".format(
+                    cluster_id, cluster_log
+                )
             )
             already_warned_missing_log.add(cluster_id)
 
@@ -362,10 +364,17 @@ class JobStateTracker:
                 for event in events:
                     new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
                     if new_status is not None:
-                        self.state[event_log_path][event.cluster][event.proc] = new_status
+                        self.state[event_log_path][event.cluster][
+                            event.proc
+                        ] = new_status
             except IOError:
                 # TODO: how should we handle this?  Forget all our jobs?  Warn user?
-                print("Error when reading file {}; last good event processed was {}.".format(event_log_path, event), file=sys.stderr)
+                print(
+                    "Error when reading file {}; last good event processed was {}.".format(
+                        event_log_path, event
+                    ),
+                    file=sys.stderr,
+                )
                 raise
 
     def table_by_event_log(self, abbreviate_path_components=False):
