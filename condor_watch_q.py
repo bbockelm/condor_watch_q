@@ -171,7 +171,7 @@ def cli():
     args = parse_args()
 
     if args.debug:
-        print("Enabling HTCondor debug output...", file = sys.stderr)
+        print("Enabling HTCondor debug output...", file=sys.stderr)
         htcondor.enable_debug()
 
     return watch_q(
@@ -230,8 +230,8 @@ def watch_q(
             reading = "Reading new events..."
             print(reading, end="")
             sys.stdout.flush()
-            state.process_events()
-            print("\r" + (len(reading) * " ") + "\r" + "\033[1A")
+            processing_messages = state.process_events()
+            print("\r" + (len(reading) * " ") + "\r", end="")
             sys.stdout.flush()
 
             if msg is not None:
@@ -241,8 +241,16 @@ def watch_q(
                 move = "\033[{}A\r".format(len(prev_len_lines))
                 clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
                 sys.stdout.write(move + clear + move)
+                sys.stdout.flush()
 
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            if len(processing_messages) > 0:
+                print(
+                    "\n".join("{}  {}".format(now, m) for m in processing_messages),
+                    file=sys.stderr,
+                )
+
             if groupby == "log":
                 msg = state.table_by_event_log(
                     abbreviate_path_components=abbreviate_path_components
@@ -253,7 +261,7 @@ def watch_q(
                 msg = state.table_by_batch_name()
             else:
                 raise ValueError(
-                    'groupby must be one of {{ log, cluster }}, but was "{}"'.format(
+                    'groupby must be one of {{log, cluster, batch}}, but was "{}"'.format(
                         groupby
                     )
                 )
@@ -377,24 +385,29 @@ class JobStateTracker:
                     yield (cluster_id, proc_id, job_status)
 
     def process_events(self):
+        messages = []
+
         for event_log_path, events in self.event_readers.items():
-            event = "(Unknown)"
-            try:
-                for event in events:
-                    new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
-                    if new_status is not None:
-                        self.state[event_log_path][event.cluster][
-                            event.proc
-                        ] = new_status
-            except IOError:
-                # TODO: how should we handle this?  Forget all our jobs?  Warn user?
-                print(
-                    "Error when reading file {}; last good event processed was {}.".format(
-                        event_log_path, event
-                    ),
-                    file=sys.stderr,
-                )
-                raise
+            while True:
+                try:
+                    event = next(events)
+                except StopIteration:
+                    break
+                except Exception as e:
+                    messages.append(
+                        "ERROR: failed to parse event from {}. Reason: {}".format(
+                            event_log_path, e
+                        )
+                    )
+                    continue
+
+                new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
+                if new_status is None:
+                    continue
+
+                self.state[event_log_path][event.cluster][event.proc] = new_status
+
+        return messages
 
     def table_by_event_log(self, abbreviate_path_components=False):
         headers = [EVENT_LOG] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
