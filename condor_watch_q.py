@@ -79,6 +79,9 @@ def parse_args():
     parser.add_argument(
         "-files", nargs="+", metavar="FILE", help="Which event logs to track."
     )
+    parser.add_argument(
+        "-batches", nargs="+", metavar="BATCH_NAME", help="Which batch names to track."
+    )
 
     # select when (if) to exit
     parser.add_argument(
@@ -112,8 +115,8 @@ def parse_args():
     parser.add_argument(
         "-groupby",
         action="store",
-        default="log",
-        choices=("log", "cluster"),
+        default="batch",
+        choices=("batch", "log", "cluster"),
         help="Select what to group jobs by.",
     )
 
@@ -174,6 +177,7 @@ def cli():
         users=args.users,
         cluster_ids=args.clusters,
         event_logs=args.files,
+        batches=args.batches,
         exit_conditions=args.exit,
         abbreviate_path_components=args.abbreviate,
         groupby=args.groupby,
@@ -193,6 +197,7 @@ def watch_q(
     users=None,
     cluster_ids=None,
     event_logs=None,
+    batches=None,
     exit_conditions=None,
     abbreviate_path_components=False,
     groupby="log",
@@ -202,12 +207,14 @@ def watch_q(
     if exit_conditions is None:
         exit_conditions = []
 
-    cluster_ids, event_logs = find_job_event_logs(users, cluster_ids, event_logs)
+    cluster_ids, event_logs, batch_names = find_job_event_logs(
+        users, cluster_ids, event_logs
+    )
     if cluster_ids is not None and len(cluster_ids) == 0:
         print("No jobs found")
         sys.exit(0)
 
-    state = JobStateTracker(event_logs)
+    state = JobStateTracker(event_logs, batch_names)
 
     exit_checks = []
     for grouper, checker, exit_code in exit_conditions:
@@ -241,6 +248,8 @@ def watch_q(
                 )
             elif groupby == "cluster":
                 msg = state.table_by_cluster_id()
+            elif groupby == "batch":
+                msg = state.table_by_batch_name()
             else:
                 raise ValueError(
                     'groupby must be one of {{ log, cluster }}, but was "{}"'.format(
@@ -267,21 +276,24 @@ def watch_q(
         sys.exit(0)
 
 
-PROJECTION = ["ClusterId", "Owner", "UserLog", "Iwd"]
+PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
 
 
-def find_job_event_logs(users, cluster_ids, files):
+def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
     if users is None:
         users = []
     if cluster_ids is None:
         cluster_ids = []
     if files is None:
         files = []
+    if batches is None:
+        batches = []
 
     constraint = " || ".join(
         itertools.chain(
             ("Owner == {}".format(classad.quote(u)) for u in users),
             ("ClusterId == {}".format(cid) for cid in cluster_ids),
+            ("JobBatchName == {}".format(b) for b in batches),
         )
     )
     if constraint != "":
@@ -291,10 +303,12 @@ def find_job_event_logs(users, cluster_ids, files):
 
     cluster_ids = set()
     event_logs = set()
+    batch_names = {}
     already_warned_missing_log = set()
     for ad in ads:
         cluster_id = ad["ClusterId"]
         cluster_ids.add(cluster_id)
+        batch_names[cluster_id] = ad.get("JobBatchName", "ID: {}".format(cluster_id))
         cluster_log = None
         try:
             if os.path.isabs(ad["UserLog"]):
@@ -329,7 +343,7 @@ def find_job_event_logs(users, cluster_ids, files):
     for file in files:
         event_logs.add(os.path.abspath(file))
 
-    return cluster_ids, event_logs
+    return cluster_ids, event_logs, batch_names
 
 
 def query(constraint, projection=None):
@@ -342,14 +356,17 @@ TOTAL = "TOTAL"
 ACTIVE_JOBS = "ACTIVE_JOBS"
 EVENT_LOG = "LOG"
 CLUSTER_ID = "CLUSTER"
+BATCH_NAME = "BATCH"
 
 
 class JobStateTracker:
-    def __init__(self, event_log_paths):
+    def __init__(self, event_log_paths, batch_names):
         self.event_readers = {
             p: htcondor.JobEventLog(p).events(0) for p in event_log_paths
         }
         self.state = collections.defaultdict(lambda: collections.defaultdict(dict))
+
+        self.batch_names = batch_names
 
     def job_states(self):
         for event_log, clusters in self.state.items():
@@ -452,6 +469,61 @@ class JobStateTracker:
                 rows.append(d)
 
         rows.sort(key=lambda r: r[CLUSTER_ID])
+
+        dont_include = set()
+        for h in headers:
+            if all((row[h] == 0 for row in rows)):
+                dont_include.add(h)
+        dont_include -= ALWAYS_INCLUDE
+        headers = [h for h in headers if h not in dont_include]
+        for d in dont_include:
+            for row in rows:
+                row.pop(d)
+
+        return table(headers=headers, rows=rows, alignment=TABLE_ALIGNMENT)
+
+    def table_by_batch_name(self):
+        headers = [BATCH_NAME] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
+        rows = []
+        data = {
+            batch: {js: 0 for js in JobStatus} for batch in self.batch_names.values()
+        }
+        live_job_ids = collections.defaultdict(list)
+        for event_log_path, state in sorted(self.state.items()):
+            for cluster_id, proc_statuses in state.items():
+                batch_name = self.batch_names[cluster_id]
+                try:
+                    batch_name = self.batch_names[cluster_id]
+                except KeyError:
+                    # when in batch mode, we can't display anything that we
+                    # don't have the batch name for, which can happen if we
+                    # see events in a log for a cluster that has already left
+                    # the queue
+                    continue
+                d = data[batch_name]
+                for proc_status in proc_statuses.values():
+                    d[proc_status] += 1
+
+                live_proc_ids = [
+                    p for p, status in proc_statuses.items() if status in ACTIVE_STATES
+                ]
+
+                if len(live_proc_ids) > 0:
+                    if len(live_proc_ids) == 1:
+                        x = "{}.{}".format(cluster_id, live_proc_ids[0])
+                    else:
+                        x = "{}.{}-{}".format(
+                            cluster_id, min(live_proc_ids), max(live_proc_ids)
+                        )
+                    live_job_ids[batch_name].append(x)
+
+        for batch_name, d in data.items():
+            d[TOTAL] = sum(d.values())
+            d[BATCH_NAME] = batch_name
+            d[ACTIVE_JOBS] = ", ".join(live_job_ids[batch_name])
+            rows.append(d)
+
+        rows.sort(key=lambda r: r[BATCH_NAME])
 
         dont_include = set()
         for h in headers:
@@ -574,6 +646,7 @@ TABLE_ALIGNMENT = {
     CLUSTER_ID: "ljust",
     TOTAL: "rjust",
     ACTIVE_JOBS: "ljust",
+    BATCH_NAME: "ljust",
 }
 for k in JobStatus:
     TABLE_ALIGNMENT[k] = "rjust"
@@ -632,67 +705,68 @@ def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None)
 
 
 if __name__ == "__main__":
-    # import random
-    #
-    # schedd = htcondor.Schedd()
-    #
-    # home = os.path.expanduser("~")
-    #
-    # t = str(int(time.time()))
-    #
-    # for x in range(1, 6):
-    #     log = os.path.join(home, t, "{}.log".format(x))
-    #
-    #     # if x == 2:
-    #     #     log = os.path.join(
-    #     #         home,
-    #     #         "deeply",
-    #     #         "nested",
-    #     #         "path",
-    #     #         "to",
-    #     #         "veryveryveryveryveryveryveryveryverylong",
-    #     #         "{}.log".format(x),
-    #     #     )
-    #     # if x == 3:
-    #     #     log = os.path.join(
-    #     #         home,
-    #     #         "deeply",
-    #     #         "nested",
-    #     #         "path",
-    #     #         "to",
-    #     #         "veryveryveryberrylong",
-    #     #         "{}.log".format(x),
-    #     #     )
-    #     # if x == 4:
-    #     #     log = None
-    #
-    #     if log is not None:
-    #         try:
-    #             os.makedirs(os.path.dirname(log))
-    #         except OSError:
-    #             pass
-    #
-    #     s = dict(
-    #         executable="/bin/sleep",
-    #         arguments="1",
-    #         hold=False,
-    #         transfer_input_files="nope" if x == 4 else "",
-    #     )
-    #     if log is not None:
-    #         s["log"] = log
-    #
-    #     sub = htcondor.Submit(s)
-    #     with schedd.transaction() as txn:
-    #         sub.queue(txn, random.randint(1, 5))
-    #     with schedd.transaction() as txn:
-    #         sub.queue(txn, random.randint(1, 5))
-    #
-    # os.system("condor_q")
-    # print()
-    #
-    # # os.chdir(os.path.join(home, "deeply", "nested"))
-    # os.chdir(os.path.expanduser("~"))
-    # print("Running from", os.getcwd())
-    # print("-" * 40)
+    import random
+
+    schedd = htcondor.Schedd()
+
+    home = os.path.expanduser("~")
+
+    t = str(int(time.time()))
+
+    for x in range(1, 6):
+        log = os.path.join(home, t, "{}.log".format(x))
+
+        # if x == 2:
+        #     log = os.path.join(
+        #         home,
+        #         "deeply",
+        #         "nested",
+        #         "path",
+        #         "to",
+        #         "veryveryveryveryveryveryveryveryverylong",
+        #         "{}.log".format(x),
+        #     )
+        # if x == 3:
+        #     log = os.path.join(
+        #         home,
+        #         "deeply",
+        #         "nested",
+        #         "path",
+        #         "to",
+        #         "veryveryveryberrylong",
+        #         "{}.log".format(x),
+        #     )
+        # if x == 4:
+        #     log = None
+
+        if log is not None:
+            try:
+                os.makedirs(os.path.dirname(log))
+            except OSError:
+                pass
+
+        s = dict(
+            executable="/bin/sleep",
+            arguments="1",
+            hold=False,
+            transfer_input_files="nope" if x == 4 else "",
+            jobbatchname="batch {}".format(x),
+        )
+        if log is not None:
+            s["log"] = log
+
+        sub = htcondor.Submit(s)
+        with schedd.transaction() as txn:
+            sub.queue(txn, random.randint(1, 5))
+        with schedd.transaction() as txn:
+            sub.queue(txn, random.randint(1, 5))
+
+    os.system("condor_q")
+    print()
+
+    # os.chdir(os.path.join(home, "deeply", "nested"))
+    os.chdir(os.path.expanduser("~"))
+    print("Running from", os.getcwd())
+    print("-" * 40)
 
     cli()
