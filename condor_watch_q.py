@@ -171,6 +171,7 @@ def cli():
     args = parse_args()
 
     if args.debug:
+        print("Enabling HTCondor debug output...", file=sys.stderr)
         htcondor.enable_debug()
 
     return watch_q(
@@ -229,8 +230,8 @@ def watch_q(
             reading = "Reading new events..."
             print(reading, end="")
             sys.stdout.flush()
-            state.process_events()
-            print("\r" + (len(reading) * " ") + "\r" + "\033[1A")
+            processing_messages = state.process_events()
+            print("\r" + (len(reading) * " ") + "\r", end="")
             sys.stdout.flush()
 
             if msg is not None:
@@ -240,8 +241,16 @@ def watch_q(
                 move = "\033[{}A\r".format(len(prev_len_lines))
                 clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
                 sys.stdout.write(move + clear + move)
+                sys.stdout.flush()
 
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            if len(processing_messages) > 0:
+                print(
+                    "\n".join("{}  {}".format(now, m) for m in processing_messages),
+                    file=sys.stderr,
+                )
+
             if groupby == "log":
                 msg = state.table_by_event_log(
                     abbreviate_path_components=abbreviate_path_components
@@ -252,7 +261,7 @@ def watch_q(
                 msg = state.table_by_batch_name()
             else:
                 raise ValueError(
-                    'groupby must be one of {{ log, cluster }}, but was "{}"'.format(
+                    'groupby must be one of {{log, cluster, batch}}, but was "{}"'.format(
                         groupby
                     )
                 )
@@ -276,7 +285,7 @@ def watch_q(
         sys.exit(0)
 
 
-PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName"]
+PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
 
 
 def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
@@ -309,16 +318,26 @@ def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
         cluster_id = ad["ClusterId"]
         cluster_ids.add(cluster_id)
         batch_names[cluster_id] = ad.get("JobBatchName", "ID: {}".format(cluster_id))
-        try:
-            event_logs.add(os.path.abspath(ad["UserLog"]))
-        except KeyError:
-            if cluster_id in already_warned_missing_log:
-                continue
 
-            print(
-                "WARNING: cluster {} does not have a job event log".format(cluster_id)
-            )
-            already_warned_missing_log.add(cluster_id)
+        try:
+            log_path = ad["UserLog"]
+        except KeyError:
+            if cluster_id not in already_warned_missing_log:
+                print(
+                    "WARNING: cluster {} does not have a job event log file (set log=<path> in the submit description)".format(
+                        cluster_id
+                    ),
+                    file=sys.stderr,
+                )
+                already_warned_missing_log.add(cluster_id)
+            continue
+
+        # if the path is not absolute, try to make it absolute using the
+        # job's initial working directory
+        if not os.path.isabs(log_path):
+            log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
+
+        event_logs.add(log_path)
 
     for file in files:
         event_logs.add(os.path.abspath(file))
@@ -341,9 +360,20 @@ BATCH_NAME = "BATCH"
 
 class JobStateTracker:
     def __init__(self, event_log_paths, batch_names):
-        self.event_readers = {
-            p: htcondor.JobEventLog(p).events(0) for p in event_log_paths
-        }
+        event_readers = {}
+        for event_log_path in event_log_paths:
+            try:
+                reader = htcondor.JobEventLog(event_log_path).events(0)
+                event_readers[event_log_path] = reader
+            except (OSError, IOError) as e:
+                print(
+                    "WARNING: Could not open event log at {} for reading, so it will be ignored. Reason: {}".format(
+                        event_log_path, e
+                    ),
+                    file=sys.stderr,
+                )
+
+        self.event_readers = event_readers
         self.state = collections.defaultdict(lambda: collections.defaultdict(dict))
 
         self.batch_names = batch_names
@@ -355,11 +385,29 @@ class JobStateTracker:
                     yield (cluster_id, proc_id, job_status)
 
     def process_events(self):
+        messages = []
+
         for event_log_path, events in self.event_readers.items():
-            for event in events:
+            while True:
+                try:
+                    event = next(events)
+                except StopIteration:
+                    break
+                except Exception as e:
+                    messages.append(
+                        "ERROR: failed to parse event from {}. Reason: {}".format(
+                            event_log_path, e
+                        )
+                    )
+                    continue
+
                 new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
-                if new_status is not None:
-                    self.state[event_log_path][event.cluster][event.proc] = new_status
+                if new_status is None:
+                    continue
+
+                self.state[event_log_path][event.cluster][event.proc] = new_status
+
+        return messages
 
     def table_by_event_log(self, abbreviate_path_components=False):
         headers = [EVENT_LOG] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
@@ -458,7 +506,6 @@ class JobStateTracker:
         live_job_ids = collections.defaultdict(list)
         for event_log_path, state in sorted(self.state.items()):
             for cluster_id, proc_statuses in state.items():
-                batch_name = self.batch_names[cluster_id]
                 try:
                     batch_name = self.batch_names[cluster_id]
                 except KeyError:
