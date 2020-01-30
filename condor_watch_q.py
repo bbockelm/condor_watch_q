@@ -27,6 +27,7 @@ import enum
 import datetime
 import os
 import time
+import operator
 
 import htcondor
 import classad
@@ -195,13 +196,13 @@ EXIT_JOB_STATUS_CHECK = {
 
 
 def watch_q(
-    users=None,
-    cluster_ids=None,
-    event_logs=None,
-    batches=None,
-    exit_conditions=None,
-    abbreviate_path_components=False,
-    groupby="log",
+        users=None,
+        cluster_ids=None,
+        event_logs=None,
+        batches=None,
+        exit_conditions=None,
+        abbreviate_path_components=False,
+        groupby="log",
 ):
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
@@ -209,13 +210,20 @@ def watch_q(
         exit_conditions = []
 
     cluster_ids, event_logs, batch_names = find_job_event_logs(
-        users, cluster_ids, event_logs
+        users, cluster_ids, event_logs, batches,
     )
     if cluster_ids is not None and len(cluster_ids) == 0:
         print("No jobs found")
         sys.exit(0)
 
-    state = JobStateTracker(event_logs, batch_names)
+    tracker = JobStateTracker(event_logs, batch_names)
+
+    # TODO: this should happen during argument parsing
+    groupby = {
+        'log': 'event_log_path',
+        'cluster': 'cluster_id',
+        'batch': 'batch_name',
+    }[groupby]
 
     exit_checks = []
     for grouper, checker, exit_code in exit_conditions:
@@ -226,11 +234,12 @@ def watch_q(
 
     try:
         msg = None
+
         while True:
             reading = "Reading new events..."
             print(reading, end="")
             sys.stdout.flush()
-            processing_messages = state.process_events()
+            processing_messages = tracker.process_events()
             print("\r" + (len(reading) * " ") + "\r", end="")
             sys.stdout.flush()
 
@@ -251,20 +260,7 @@ def watch_q(
                     file=sys.stderr,
                 )
 
-            if groupby == "log":
-                msg = state.table_by_event_log(
-                    abbreviate_path_components=abbreviate_path_components
-                )
-            elif groupby == "cluster":
-                msg = state.table_by_cluster_id()
-            elif groupby == "batch":
-                msg = state.table_by_batch_name()
-            else:
-                raise ValueError(
-                    'groupby must be one of {{log, cluster, batch}}, but was "{}"'.format(
-                        groupby
-                    )
-                )
+            msg = table_by(tracker.clusters, groupby, abbreviate_path_components=abbreviate_path_components)
             msg = msg.splitlines()
             msg += ["", "Updated at {}".format(now)]
             msg = "\n".join(msg)
@@ -272,7 +268,7 @@ def watch_q(
             print(msg)
 
             for grouper, checker, exit_code, disp in exit_checks:
-                if grouper((checker(s) for _, _, s in state.job_states())):
+                if grouper((checker(s) for s in tracker.job_states)):
                     print(
                         'Exiting with code {} because of condition "{}" at {}'.format(
                             exit_code, disp, now
@@ -317,7 +313,7 @@ def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
     for ad in ads:
         cluster_id = ad["ClusterId"]
         cluster_ids.add(cluster_id)
-        batch_names[cluster_id] = ad.get("JobBatchName", "ID: {}".format(cluster_id))
+        batch_names[cluster_id] = ad.get("JobBatchName")
 
         try:
             log_path = ad["UserLog"]
@@ -358,6 +354,31 @@ CLUSTER_ID = "CLUSTER"
 BATCH_NAME = "BATCH"
 
 
+class Cluster:
+    def __init__(self, cluster_id, event_log_path, batch_name):
+        self.cluster_id = cluster_id
+        self.event_log_path = event_log_path
+        self._batch_name = batch_name
+
+        self.job_to_state = {}
+
+    @property
+    def batch_name(self):
+        return self._batch_name or "ID: {}".format(self.cluster_id)
+
+    def __setitem__(self, key, value):
+        self.job_to_state[key] = value
+
+    def __getitem__(self, item):
+        return self.job_to_state[item]
+
+    def items(self):
+        return self.job_to_state.items()
+
+    def __iter__(self):
+        return iter(self.items())
+
+
 class JobStateTracker:
     def __init__(self, event_log_paths, batch_names):
         event_readers = {}
@@ -378,11 +399,7 @@ class JobStateTracker:
 
         self.batch_names = batch_names
 
-    def job_states(self):
-        for event_log, clusters in self.state.items():
-            for cluster_id, procs in clusters.items():
-                for proc_id, job_status in procs.items():
-                    yield (cluster_id, proc_id, job_status)
+        self.cluster_id_to_cluster = {}
 
     def process_events(self):
         messages = []
@@ -405,151 +422,99 @@ class JobStateTracker:
                 if new_status is None:
                     continue
 
-                self.state[event_log_path][event.cluster][event.proc] = new_status
+                cluster = self.cluster_id_to_cluster.setdefault(
+                    event.cluster,
+                    Cluster(
+                        cluster_id=event.cluster,
+                        event_log_path=event_log_path,
+                        batch_name=self.batch_names.get(event.cluster),
+                    ),
+                )
+
+                cluster[event.proc] = new_status
 
         return messages
 
-    def table_by_event_log(self, abbreviate_path_components=False):
-        headers = [EVENT_LOG] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
-        rows = []
-        event_log_names = {
-            k: normalize_path(k, abbreviate_path_components=abbreviate_path_components)
-            for k in self.state.keys()
-        }
-        for event_log_path, state in sorted(self.state.items()):
-            # todo: total should be derived from somewhere else, for late materialization
-            d = {js: 0 for js in JobStatus}
-            live_job_ids = []
-            for cluster_id, proc_statuses in state.items():
-                for proc_status in proc_statuses.values():
-                    d[proc_status] += 1
+    @property
+    def clusters(self):
+        return self.cluster_id_to_cluster.values()
 
-                live_proc_ids = [
-                    p for p, status in proc_statuses.items() if status in ACTIVE_STATES
-                ]
+    @property
+    def job_states(self):
+        for cluster in self.clusters:
+            for job, state in cluster:
+                yield state
 
-                if len(live_proc_ids) > 0:
-                    if len(live_proc_ids) == 1:
-                        x = "{}.{}".format(cluster_id, live_proc_ids[0])
-                    else:
-                        x = "{}.{}-{}".format(
-                            cluster_id, min(live_proc_ids), max(live_proc_ids)
-                        )
-                    live_job_ids.append(x)
 
-            d[TOTAL] = sum(d.values())
-            d[EVENT_LOG] = event_log_names[event_log_path]
-            d[ACTIVE_JOBS] = ", ".join(live_job_ids)
-            rows.append(d)
+def table_by(clusters, attribute, abbreviate_path_components):
+    key = {
+        'event_log_path': EVENT_LOG,
+        'cluster_id': CLUSTER_ID,
+        'batch_name': BATCH_NAME,
+    }[attribute]
 
-        dont_include = set()
-        for h in headers:
-            if all((row[h] == 0 for row in rows)):
-                dont_include.add(h)
-        dont_include -= ALWAYS_INCLUDE
-        headers = [h for h in headers if h not in dont_include]
-        for d in dont_include:
-            for row in rows:
-                row.pop(d)
+    rows = []
+    for attribute_value, clusters in group_clusters_by(clusters, attribute).items():
+        row_data = row_data_from_job_state(clusters)
 
-        return table(headers=headers, rows=rows, alignment=TABLE_ALIGNMENT)
+        row_data[key] = attribute_value
 
-    def table_by_cluster_id(self):
-        headers = [CLUSTER_ID] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
-        rows = []
-        for event_log_path, state in sorted(self.state.items()):
-            # todo: total should be derived from somewhere else, for late materialization
-            for cluster_id, proc_statuses in state.items():
-                d = {js: 0 for js in JobStatus}
-                live_job_ids = []
-                for proc_status in proc_statuses.values():
-                    d[proc_status] += 1
+        rows.append(row_data)
 
-                live_proc_ids = [
-                    p for p, status in proc_statuses.items() if status in ACTIVE_STATES
-                ]
+    if key == EVENT_LOG:
+        for row in rows:
+            row[key] = normalize_path(
+                row[key],
+                abbreviate_path_components=abbreviate_path_components,
+            )
 
-                if len(live_proc_ids) > 0:
-                    if len(live_proc_ids) == 1:
-                        x = "{}.{}".format(cluster_id, live_proc_ids[0])
-                    else:
-                        x = "{}.{}-{}".format(
-                            cluster_id, min(live_proc_ids), max(live_proc_ids)
-                        )
-                    live_job_ids.append(x)
+    rows.sort(key=lambda r: r[key])
 
-                d[TOTAL] = sum(d.values())
-                d[CLUSTER_ID] = cluster_id
-                d[ACTIVE_JOBS] = ", ".join(live_job_ids)
-                rows.append(d)
+    headers, rows = strip_empty_columns(rows)
 
-        rows.sort(key=lambda r: r[CLUSTER_ID])
+    return table(headers=[key] + headers, rows=rows, alignment=TABLE_ALIGNMENT)
 
-        dont_include = set()
-        for h in headers:
-            if all((row[h] == 0 for row in rows)):
-                dont_include.add(h)
-        dont_include -= ALWAYS_INCLUDE
-        headers = [h for h in headers if h not in dont_include]
-        for d in dont_include:
-            for row in rows:
-                row.pop(d)
 
-        return table(headers=headers, rows=rows, alignment=TABLE_ALIGNMENT)
+def group_clusters_by(clusters, attribute):
+    getter = operator.attrgetter(attribute)
 
-    def table_by_batch_name(self):
-        headers = [BATCH_NAME] + list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
-        rows = []
-        data = {
-            batch: {js: 0 for js in JobStatus} for batch in self.batch_names.values()
-        }
-        live_job_ids = collections.defaultdict(list)
-        for event_log_path, state in sorted(self.state.items()):
-            for cluster_id, proc_statuses in state.items():
-                try:
-                    batch_name = self.batch_names[cluster_id]
-                except KeyError:
-                    # when in batch mode, we can't display anything that we
-                    # don't have the batch name for, which can happen if we
-                    # see events in a log for a cluster that has already left
-                    # the queue
-                    continue
-                d = data[batch_name]
-                for proc_status in proc_statuses.values():
-                    d[proc_status] += 1
+    groups = collections.defaultdict(list)
+    for cluster in clusters:
+        groups[getter(cluster)].append(cluster)
 
-                live_proc_ids = [
-                    p for p, status in proc_statuses.items() if status in ACTIVE_STATES
-                ]
+    return groups
 
-                if len(live_proc_ids) > 0:
-                    if len(live_proc_ids) == 1:
-                        x = "{}.{}".format(cluster_id, live_proc_ids[0])
-                    else:
-                        x = "{}.{}-{}".format(
-                            cluster_id, min(live_proc_ids), max(live_proc_ids)
-                        )
-                    live_job_ids[batch_name].append(x)
 
-        for batch_name, d in data.items():
-            d[TOTAL] = sum(d.values())
-            d[BATCH_NAME] = batch_name
-            d[ACTIVE_JOBS] = ", ".join(live_job_ids[batch_name])
-            rows.append(d)
+def strip_empty_columns(rows):
+    dont_include = set()
+    for h in HEADERS:
+        if all((row[h] == 0 for row in rows)):
+            dont_include.add(h)
+    dont_include -= ALWAYS_INCLUDE
+    headers = [h for h in HEADERS if h not in dont_include]
+    for row_data in dont_include:
+        for row in rows:
+            row.pop(row_data)
 
-        rows.sort(key=lambda r: r[BATCH_NAME])
+    return headers, rows
 
-        dont_include = set()
-        for h in headers:
-            if all((row[h] == 0 for row in rows)):
-                dont_include.add(h)
-        dont_include -= ALWAYS_INCLUDE
-        headers = [h for h in headers if h not in dont_include]
-        for d in dont_include:
-            for row in rows:
-                row.pop(d)
 
-        return table(headers=headers, rows=rows, alignment=TABLE_ALIGNMENT)
+def row_data_from_job_state(clusters):
+    row_data = {js: 0 for js in JobStatus}
+
+    active_job_ids = []
+
+    for cluster in clusters:
+        for proc_id, job_state in cluster:
+            row_data[job_state] += 1
+
+            if job_state in ACTIVE_STATES:
+                active_job_ids.append("{}.{}".format(cluster.cluster_id, proc_id))
+
+    row_data[TOTAL] = sum(row_data.values())
+    row_data[ACTIVE_JOBS] = ", ".join(active_job_ids)
+
+    return row_data
 
 
 def normalize_path(path, abbreviate_path_components=False):
@@ -664,6 +629,8 @@ TABLE_ALIGNMENT = {
 }
 for k in JobStatus:
     TABLE_ALIGNMENT[k] = "rjust"
+
+HEADERS = list(JobStatus.ordered()) + [TOTAL, ACTIVE_JOBS]
 
 JOB_EVENT_STATUS_TRANSITIONS = {
     htcondor.JobEventType.SUBMIT: JobStatus.IDLE,

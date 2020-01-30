@@ -5,4 +5,4 @@ CONTAINER_TAG=condor_watch_q-tests
 set -e
 echo "Building condor_watch_q testing container..."
 docker build -t ${CONTAINER_TAG} .
-docker run -it --rm ${CONTAINER_TAG} $@
+docker run -it --rm --mount type=bind,source="$PWD",target=/home/watcher/condor_watch_q,readonly ${CONTAINER_TAG} $@
