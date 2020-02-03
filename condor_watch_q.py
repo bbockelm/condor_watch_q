@@ -515,9 +515,9 @@ def row_data_from_job_state(clusters):
     if len(active_job_ids) > 3:
         active_job_ids = [active_job_ids[0], active_job_ids[-1]]
         row_data[ACTIVE_JOBS] = " ... ".join(active_job_ids)
-        return row_data
-
-    row_data[ACTIVE_JOBS] = ", ".join(active_job_ids)
+    else:
+        row_data[ACTIVE_JOBS] = ", ".join(active_job_ids)
+    
     return row_data
 
 
