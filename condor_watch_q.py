@@ -453,7 +453,8 @@ def table_by(clusters, attribute, abbreviate_path_components):
         'batch_name': BATCH_NAME,
     }[attribute]
 
-    row_colors = [color.CYAN, color.GREEN,color.GREEN,color.GREEN,color.GREEN,color.GREEN]
+    #tests for color output
+    row_colors = [color.BLUE, color.GREEN,color.GREEN,color.GREEN,color.GREEN,color.GREEN]
 
     rows = []
 
@@ -653,9 +654,10 @@ JOB_EVENT_STATUS_TRANSITIONS = {
     htcondor.JobEventType.JOB_ABORTED: JobStatus.REMOVED,
 }
 class color:
-    RED = '\033[31m'
-    GREEN = '\033[32m'
-    CYAN = '\033[36m'
+    RED = '\033[31m'    #HOLD: needs intervention      
+    GREEN = '\033[32m'  #COMPLETE: complete without issues
+    CYAN = '\033[36m'   #RUNNING: working as intended, no hold
+    BLUE = '\033[34m'   #NOT STARTED
     ENDC = '\033[0m'
 
 def table(headers, rows,row_colors, fill="", header_fmt=None, row_fmt=None, alignment=None):
