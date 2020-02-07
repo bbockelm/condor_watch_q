@@ -43,11 +43,11 @@ for x in range(1, 6):
             pass
 
     s = dict(
-        executable = "/bin/sleep",
-        arguments = "1",
-        hold = False,
-        transfer_input_files = "nope" if x == 4 else "",
-        jobbatchname = "batch {}".format(x),
+        executable="/bin/sleep",
+        arguments="1",
+        hold=False,
+        transfer_input_files="nope" if x == 4 else "",
+        jobbatchname="batch {}".format(x),
     )
     if log is not None:
         s["log"] = log

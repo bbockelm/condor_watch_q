@@ -196,13 +196,13 @@ EXIT_JOB_STATUS_CHECK = {
 
 
 def watch_q(
-        users=None,
-        cluster_ids=None,
-        event_logs=None,
-        batches=None,
-        exit_conditions=None,
-        abbreviate_path_components=False,
-        groupby="log",
+    users=None,
+    cluster_ids=None,
+    event_logs=None,
+    batches=None,
+    exit_conditions=None,
+    abbreviate_path_components=False,
+    groupby="log",
 ):
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
@@ -210,7 +210,7 @@ def watch_q(
         exit_conditions = []
 
     cluster_ids, event_logs, batch_names = find_job_event_logs(
-        users, cluster_ids, event_logs, batches,
+        users, cluster_ids, event_logs, batches
     )
     if cluster_ids is not None and len(cluster_ids) == 0:
         print("No jobs found")
@@ -219,11 +219,9 @@ def watch_q(
     tracker = JobStateTracker(event_logs, batch_names)
 
     # TODO: this should happen during argument parsing
-    groupby = {
-        'log': 'event_log_path',
-        'cluster': 'cluster_id',
-        'batch': 'batch_name',
-    }[groupby]
+    groupby = {"log": "event_log_path", "cluster": "cluster_id", "batch": "batch_name"}[
+        groupby
+    ]
 
     exit_checks = []
     for grouper, checker, exit_code in exit_conditions:
@@ -260,13 +258,25 @@ def watch_q(
                     file=sys.stderr,
                 )
 
-            summary, msg = table_by(tracker.clusters, groupby, abbreviate_path_components=abbreviate_path_components)
+            summary, msg = table_by(
+                tracker.clusters,
+                groupby,
+                abbreviate_path_components=abbreviate_path_components,
+            )
             msg = msg.splitlines()
             msg += ["", "Updated at {}".format(now)]
             msg = "\n".join(msg)
-            srm = "\n{} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(summary[TOTAL], summary[JobStatus.COMPLETED], summary[JobStatus.REMOVED], summary[JobStatus.IDLE], summary[JobStatus.RUNNING], summary[JobStatus.HELD], summary[JobStatus.SUSPENDED])
+            srm = "\n{} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(
+                summary[TOTAL],
+                summary[JobStatus.COMPLETED],
+                summary[JobStatus.REMOVED],
+                summary[JobStatus.IDLE],
+                summary[JobStatus.RUNNING],
+                summary[JobStatus.HELD],
+                summary[JobStatus.SUSPENDED],
+            )
             msg += srm
-            
+
             print(msg)
 
             for grouper, checker, exit_code, disp in exit_checks:
@@ -450,21 +460,21 @@ class JobStateTracker:
 
 def table_by(clusters, attribute, abbreviate_path_components):
     key = {
-        'event_log_path': EVENT_LOG,
-        'cluster_id': CLUSTER_ID,
-        'batch_name': BATCH_NAME,
+        "event_log_path": EVENT_LOG,
+        "cluster_id": CLUSTER_ID,
+        "batch_name": BATCH_NAME,
     }[attribute]
 
     summary = collections.defaultdict(int)
     rows = []
     for attribute_value, clusters in group_clusters_by(clusters, attribute).items():
         row_data = row_data_from_job_state(clusters)
-        
+
         summary[TOTAL] += row_data[TOTAL]
-            
+
         for status in JobStatus:
-                   if status != JobStatus.TRANSFERRING_OUTPUT:
-                      summary[status] += row_data[status]
+            if status != JobStatus.TRANSFERRING_OUTPUT:
+                summary[status] += row_data[status]
 
         row_data[key] = attribute_value
 
@@ -473,14 +483,13 @@ def table_by(clusters, attribute, abbreviate_path_components):
     if key == EVENT_LOG:
         for row in rows:
             row[key] = normalize_path(
-                row[key],
-                abbreviate_path_components=abbreviate_path_components,
+                row[key], abbreviate_path_components=abbreviate_path_components
             )
 
     rows.sort(key=lambda r: r[key])
 
     headers, rows = strip_empty_columns(rows)
-    
+
     for r in rows:
         for x in r:
             if r.get(x) == 0:
@@ -533,7 +542,7 @@ def row_data_from_job_state(clusters):
         row_data[ACTIVE_JOBS] = ", ".join(active_job_ids)
 
     return row_data
-    
+
 
 def normalize_path(path, abbreviate_path_components=False):
     possibilities = []
