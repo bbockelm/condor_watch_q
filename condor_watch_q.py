@@ -453,7 +453,10 @@ def table_by(clusters, attribute, abbreviate_path_components):
         'batch_name': BATCH_NAME,
     }[attribute]
 
+    row_colors = [color.CYAN, color.GREEN,color.GREEN,color.GREEN,color.GREEN,color.GREEN]
+
     rows = []
+
     for attribute_value, clusters in group_clusters_by(clusters, attribute).items():
         row_data = row_data_from_job_state(clusters)
 
@@ -471,8 +474,8 @@ def table_by(clusters, attribute, abbreviate_path_components):
     rows.sort(key=lambda r: r[key])
 
     headers, rows = strip_empty_columns(rows)
-
-    return table(headers=[key] + headers, rows=rows, alignment=TABLE_ALIGNMENT)
+    
+    return table(headers=[key] + headers,row_colors = row_colors, rows=rows, alignment=TABLE_ALIGNMENT)
 
 
 def group_clusters_by(clusters, attribute):
@@ -649,9 +652,13 @@ JOB_EVENT_STATUS_TRANSITIONS = {
     htcondor.JobEventType.JOB_SUSPENDED: JobStatus.SUSPENDED,
     htcondor.JobEventType.JOB_ABORTED: JobStatus.REMOVED,
 }
+class color:
+    RED = '\033[31m'
+    GREEN = '\033[32m'
+    CYAN = '\033[36m'
+    ENDC = '\033[0m'
 
-
-def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None):
+def table(headers, rows,row_colors, fill="", header_fmt=None, row_fmt=None, alignment=None):
     if header_fmt is None:
         header_fmt = lambda _: _
     if row_fmt is None:
@@ -679,9 +686,9 @@ def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None)
 
     lines = [
         row_fmt(
-            "  ".join(getattr(f, a)(l) for f, l, a in zip(row, lengths, align_methods))
+            row_colors[row_num] + "  ".join(getattr(f, a)(l) for f, l, a in zip(processed_rows[row_num], lengths, align_methods)) + color.ENDC
         )
-        for row in processed_rows
+        for row_num in range(len(processed_rows))
     ]
 
     output = "\n".join([header] + lines)
