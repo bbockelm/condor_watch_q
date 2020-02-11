@@ -40,22 +40,22 @@ def parse_args():
             """
             Track the status of HTCondor jobs over time without repeatedly 
             querying the Schedd.
-            
+
             If no users, cluster ids, or event logs are given, condor_watch_q will 
             default to tracking all of the current user's jobs.
-            
+
             Any option beginning with a single "-" can be specified by its unique
             prefix. For example, these commands are all equivalent:
-            
+
                 condor_watch_q -clusters 12345
                 condor_watch_q -clu 12345
                 condor_watch_q -c 12345
-                
+
             By default, condor_watch_q will not exit on its own. You can tell it
             to exit when certain conditions are met. For example, to exit when
             all of the jobs it is tracking are done (with exit code 0) or when any
             job is held (with exit code 1), run
-            
+
                 condor_watch_q -exit all done 0 -exit any held 1
             """
         ),
@@ -92,14 +92,13 @@ def parse_args():
         help=textwrap.dedent(
             """
             Specify conditions under which condor_watch_q should exit. 
-            To specify additional conditions, pass this option again.
-            
+
             GROUPER is one of {{{}}}.
-            
+
             JOB_STATUS is one of {{{}}}.
-            
+
             "active" means "in the queue".
-            
+
             To specify multiple exit conditions, pass this option multiple times.
             """.format(
                 ", ".join(EXIT_GROUPERS.keys()), ", ".join(EXIT_JOB_STATUS_CHECK.keys())
@@ -118,7 +117,14 @@ def parse_args():
         action="store",
         default="batch",
         choices=("batch", "log", "cluster"),
-        help="Select what to group jobs by.",
+        help=textwrap.dedent(
+            """
+            Select what attribute to group jobs by.
+    
+            Note that batch names can only be determined if the tracked jobs were
+            found in the queue; if they were not, a default batch name is used.
+            """
+        ),
     )
 
     parser.add_argument(
@@ -126,6 +132,12 @@ def parse_args():
     )
 
     args = parser.parse_args()
+
+    args.groupby = {
+        "log": "event_log_path",
+        "cluster": "cluster_id",
+        "batch": "batch_name",
+    }[args.groupby]
 
     return args
 
@@ -182,7 +194,7 @@ def cli():
         batches=args.batches,
         exit_conditions=args.exit,
         abbreviate_path_components=args.abbreviate,
-        groupby=args.groupby,
+        group_by=args.groupby,
     )
 
 
@@ -202,7 +214,7 @@ def watch_q(
     batches=None,
     exit_conditions=None,
     abbreviate_path_components=False,
-    groupby="log",
+    group_by="log",
 ):
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
@@ -217,11 +229,6 @@ def watch_q(
         sys.exit(0)
 
     tracker = JobStateTracker(event_logs, batch_names)
-
-    # TODO: this should happen during argument parsing
-    groupby = {"log": "event_log_path", "cluster": "cluster_id", "batch": "batch_name"}[
-        groupby
-    ]
 
     exit_checks = []
     for grouper, checker, exit_code in exit_conditions:
@@ -258,24 +265,23 @@ def watch_q(
                     file=sys.stderr,
                 )
 
-            summary, msg = table_by(
+            totals, msg = table_by(
                 tracker.clusters,
-                groupby,
+                group_by,
                 abbreviate_path_components=abbreviate_path_components,
             )
-            msg = msg.splitlines()
-            msg += ["", "Updated at {}".format(now)]
-            msg = "\n".join(msg)
-            srm = "\n{} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(
-                summary[TOTAL],
-                summary[JobStatus.COMPLETED],
-                summary[JobStatus.REMOVED],
-                summary[JobStatus.IDLE],
-                summary[JobStatus.RUNNING],
-                summary[JobStatus.HELD],
-                summary[JobStatus.SUSPENDED],
+            summary = "{} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(
+                totals[TOTAL],
+                totals[JobStatus.COMPLETED],
+                totals[JobStatus.REMOVED],
+                totals[JobStatus.IDLE],
+                totals[JobStatus.RUNNING],
+                totals[JobStatus.HELD],
+                totals[JobStatus.SUSPENDED],
             )
-            msg += srm
+            msg = msg.splitlines()
+            msg += ["", summary, "", "Updated at {}".format(now)]
+            msg = "\n".join(msg)
 
             print(msg)
 
@@ -465,16 +471,16 @@ def table_by(clusters, attribute, abbreviate_path_components):
         "batch_name": BATCH_NAME,
     }[attribute]
 
-    summary = collections.defaultdict(int)
+    totals = collections.defaultdict(int)
     rows = []
     for attribute_value, clusters in group_clusters_by(clusters, attribute).items():
         row_data = row_data_from_job_state(clusters)
 
-        summary[TOTAL] += row_data[TOTAL]
+        totals[TOTAL] += row_data[TOTAL]
 
         for status in JobStatus:
             if status != JobStatus.TRANSFERRING_OUTPUT:
-                summary[status] += row_data[status]
+                totals[status] += row_data[status]
 
         row_data[key] = attribute_value
 
@@ -495,7 +501,7 @@ def table_by(clusters, attribute, abbreviate_path_components):
             if r.get(x) == 0:
                 r[x] = "-"
 
-    return summary, table(headers=[key] + headers, rows=rows, alignment=TABLE_ALIGNMENT)
+    return totals, table(headers=[key] + headers, rows=rows, alignment=TABLE_ALIGNMENT)
 
 
 def group_clusters_by(clusters, attribute):
