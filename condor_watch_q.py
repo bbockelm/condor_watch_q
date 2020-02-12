@@ -56,7 +56,7 @@ def parse_args():
             all of the jobs it is tracking are done (with exit code 0) or when any
             job is held (with exit code 1), run
 
-                condor_watch_q -exit all done 0 -exit any held 1
+                condor_watch_q -exit all,done,0 -exit any,held,1
             """
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
