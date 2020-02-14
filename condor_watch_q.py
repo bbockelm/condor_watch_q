@@ -240,6 +240,7 @@ def watch_q(
             print(reading, end="")
             sys.stdout.flush()
             processing_messages = tracker.process_events()
+            # print(processing_messages)
             print("\r" + (len(reading) * " ") + "\r", end="")
             sys.stdout.flush()
 
@@ -259,7 +260,6 @@ def watch_q(
                     "\n".join("{}  {}".format(now, m) for m in processing_messages),
                     file=sys.stderr,
                 )
-
             msg = table_by(tracker.clusters, groupby, abbreviate_path_components=abbreviate_path_components)
             msg = msg.splitlines()
             msg += ["", "Updated at {}".format(now)]
@@ -282,7 +282,6 @@ def watch_q(
 
 
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
-
 
 def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
     if users is None:
@@ -431,6 +430,7 @@ class JobStateTracker:
                     ),
                 )
 
+
                 cluster[event.proc] = new_status
 
         return messages
@@ -453,16 +453,11 @@ def table_by(clusters, attribute, abbreviate_path_components):
         'batch_name': BATCH_NAME,
     }[attribute]
 
-    #tests for color output
-    row_colors = [color.BLUE, color.GREEN,color.GREEN,color.GREEN,color.GREEN,color.GREEN]
-
     rows = []
 
     for attribute_value, clusters in group_clusters_by(clusters, attribute).items():
         row_data = row_data_from_job_state(clusters)
-
         row_data[key] = attribute_value
-
         rows.append(row_data)
 
     if key == EVENT_LOG:
@@ -471,12 +466,29 @@ def table_by(clusters, attribute, abbreviate_path_components):
                 row[key],
                 abbreviate_path_components=abbreviate_path_components,
             )
-
     rows.sort(key=lambda r: r[key])
 
+    row_colors = color_match(rows)
     headers, rows = strip_empty_columns(rows)
     
-    return table(headers=[key] + headers,row_colors = row_colors, rows=rows, alignment=TABLE_ALIGNMENT)
+    return table(headers=[key] + headers, rows=rows, row_colors = row_colors, alignment=TABLE_ALIGNMENT)
+    
+def color_match(rows):
+    row_colors = []
+    for row_num in range(len(rows)):
+        row = rows[row_num]
+
+        if row.get(JobStatus.HELD) != 0:
+            row_colors.append(color.RED) #need intervention
+        elif row.get(JobStatus.COMPLETED) == row.get("TOTAL"):
+            row_colors.append(color.GREEN) #complete without error
+        elif row.get(JobStatus.IDLE) == row.get("TOTAL"):
+            row_colors.append(color.BLUE)
+        elif row.get(JobStatus.RUNNING) != 0:
+            row_colors.append(color.CYAN)
+        else:
+            row_colors.append(color.GREY)
+    return row_colors
 
 
 def group_clusters_by(clusters, attribute):
@@ -485,7 +497,6 @@ def group_clusters_by(clusters, attribute):
     groups = collections.defaultdict(list)
     for cluster in clusters:
         groups[getter(cluster)].append(cluster)
-
     return groups
 
 
@@ -658,9 +669,10 @@ class color:
     GREEN = '\033[32m'  #COMPLETE: complete without issues
     CYAN = '\033[36m'   #RUNNING: working as intended, no hold
     BLUE = '\033[34m'   #NOT STARTED
+    GREY = '\033[37m'   #unknown case
     ENDC = '\033[0m'
 
-def table(headers, rows,row_colors, fill="", header_fmt=None, row_fmt=None, alignment=None):
+def table(headers, rows, row_colors, fill="", header_fmt=None, row_fmt=None, alignment=None):
     if header_fmt is None:
         header_fmt = lambda _: _
     if row_fmt is None:
@@ -672,7 +684,6 @@ def table(headers, rows,row_colors, fill="", header_fmt=None, row_fmt=None, alig
     lengths = [len(str(h)) for h in headers]
 
     align_methods = [alignment.get(h, "center") for h in headers]
-
     processed_rows = []
     for row in rows:
         processed_rows.append([str(row.get(key, fill)) for key in headers])
@@ -694,7 +705,7 @@ def table(headers, rows,row_colors, fill="", header_fmt=None, row_fmt=None, alig
     ]
 
     output = "\n".join([header] + lines)
-
+    
     return output
 
 
