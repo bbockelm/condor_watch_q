@@ -259,7 +259,7 @@ def watch_q(
                     "\n".join("{}  {}".format(now, m) for m in processing_messages),
                     file=sys.stderr,
                 )
-                
+            
             msg = table_by(tracker.clusters, groupby, abbreviate_path_components=abbreviate_path_components)
             msg = msg.splitlines()
             msg += ["", "Updated at {}".format(now)]
@@ -705,7 +705,6 @@ def table(headers, rows, row_colors, fill="", header_fmt=None, row_fmt=None, ali
     ]
 
     output = "\n".join([header] + lines)
-    
     return output
 
 
