@@ -240,7 +240,6 @@ def watch_q(
             print(reading, end="")
             sys.stdout.flush()
             processing_messages = tracker.process_events()
-            # print(processing_messages)
             print("\r" + (len(reading) * " ") + "\r", end="")
             sys.stdout.flush()
 
@@ -260,6 +259,7 @@ def watch_q(
                     "\n".join("{}  {}".format(now, m) for m in processing_messages),
                     file=sys.stderr,
                 )
+                
             msg = table_by(tracker.clusters, groupby, abbreviate_path_components=abbreviate_path_components)
             msg = msg.splitlines()
             msg += ["", "Updated at {}".format(now)]
