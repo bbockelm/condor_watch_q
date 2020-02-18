@@ -516,9 +516,9 @@ def color_match(rows):
     row_colors = []
     for row in rows:
         if row.get(JobStatus.HELD) != 0:
-            row_colors.append(Color.RED)  # need intervention
+            row_colors.append(Color.RED)
         elif row.get(JobStatus.COMPLETED) == row.get("TOTAL"):
-            row_colors.append(Color.GREEN)  # complete without error
+            row_colors.append(Color.GREEN)
         elif row.get(JobStatus.IDLE) == row.get("TOTAL"):
             row_colors.append(Color.BLUE)
         elif row.get(JobStatus.RUNNING) != 0:
@@ -703,7 +703,7 @@ JOB_EVENT_STATUS_TRANSITIONS = {
 }
 
 
-class Color(enum.Enum):
+class Color(str, enum.Enum):
     RED = "\033[31m"
     GREEN = "\033[32m"
     CYAN = "\033[36m"
