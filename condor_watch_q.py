@@ -301,6 +301,7 @@ def watch_q(
 
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
 
+
 def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
     if users is None:
         users = []
@@ -448,7 +449,6 @@ class JobStateTracker:
                     ),
                 )
 
-
                 cluster[event.proc] = new_status
 
         return messages
@@ -501,24 +501,32 @@ def table_by(clusters, attribute, abbreviate_path_components):
             if r.get(x) == 0:
                 r[x] = "-"
 
-    return totals, table(headers=[key] + headers, rows=rows,row_colors = row_colors, alignment=TABLE_ALIGNMENT)
+    return (
+        totals,
+        table(
+            headers=[key] + headers,
+            rows=rows,
+            row_colors=row_colors,
+            alignment=TABLE_ALIGNMENT,
+        ),
+    )
+
 
 def color_match(rows):
     row_colors = []
-    for row_num in range(len(rows)):
-        row = rows[row_num]
-
+    for row in rows:
         if row.get(JobStatus.HELD) != 0:
-            row_colors.append(color.RED) #need intervention
+            row_colors.append(Color.RED)  # need intervention
         elif row.get(JobStatus.COMPLETED) == row.get("TOTAL"):
-            row_colors.append(color.GREEN) #complete without error
+            row_colors.append(Color.GREEN)  # complete without error
         elif row.get(JobStatus.IDLE) == row.get("TOTAL"):
-            row_colors.append(color.BLUE)
+            row_colors.append(Color.BLUE)
         elif row.get(JobStatus.RUNNING) != 0:
-            row_colors.append(color.CYAN)
+            row_colors.append(Color.CYAN)
         else:
-            row_colors.append(color.GREY)
+            row_colors.append(Color.GREY)
     return row_colors
+
 
 def group_clusters_by(clusters, attribute):
     getter = operator.attrgetter(attribute)
@@ -693,15 +701,20 @@ JOB_EVENT_STATUS_TRANSITIONS = {
     htcondor.JobEventType.JOB_SUSPENDED: JobStatus.SUSPENDED,
     htcondor.JobEventType.JOB_ABORTED: JobStatus.REMOVED,
 }
-class color:
-    RED = '\033[31m'    #HOLD: needs intervention      
-    GREEN = '\033[32m'  #COMPLETE: complete without issues
-    CYAN = '\033[36m'   #RUNNING: working as intended, no hold
-    BLUE = '\033[34m'   #NOT STARTED
-    GREY = '\033[37m'   #unknown case
-    ENDC = '\033[0m'
 
-def table(headers, rows, row_colors, fill="", header_fmt=None, row_fmt=None, alignment=None):
+
+class Color(enum.Enum):
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    CYAN = "\033[36m"
+    BLUE = "\033[34m"
+    GREY = "\033[37m"
+    ENDC = "\033[0m"
+
+
+def table(
+    headers, rows, row_colors, fill="", header_fmt=None, row_fmt=None, alignment=None
+):
     if header_fmt is None:
         header_fmt = lambda _: _
     if row_fmt is None:
@@ -728,9 +741,14 @@ def table(headers, rows, row_colors, fill="", header_fmt=None, row_fmt=None, ali
 
     lines = [
         row_fmt(
-            row_colors[row_num] + "  ".join(getattr(f, a)(l) for f, l, a in zip(processed_rows[row_num], lengths, align_methods)) + color.ENDC
+            row_colors[row_num]
+            + "  ".join(
+                getattr(f, a)(l)
+                for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
+            )
+            + Color.ENDC
         )
-        for row_num in range(len(processed_rows))
+        for row_num, row in enumerate(processed_rows)
     ]
 
     output = "\n".join([header] + lines)
