@@ -473,6 +473,7 @@ def table_by(clusters, attribute, abbreviate_path_components):
 
     totals = collections.defaultdict(int)
     rows = []
+
     for attribute_value, clusters in group_clusters_by(clusters, attribute).items():
         row_data = row_data_from_job_state(clusters)
 
@@ -483,7 +484,6 @@ def table_by(clusters, attribute, abbreviate_path_components):
                 totals[status] += row_data[status]
 
         row_data[key] = attribute_value
-
         rows.append(row_data)
 
     if key == EVENT_LOG:
@@ -491,9 +491,9 @@ def table_by(clusters, attribute, abbreviate_path_components):
             row[key] = normalize_path(
                 row[key], abbreviate_path_components=abbreviate_path_components
             )
-
     rows.sort(key=lambda r: r[key])
 
+    row_colors = color_match(rows)
     headers, rows = strip_empty_columns(rows)
 
     for r in rows:
@@ -501,7 +501,31 @@ def table_by(clusters, attribute, abbreviate_path_components):
             if r.get(x) == 0:
                 r[x] = "-"
 
-    return totals, table(headers=[key] + headers, rows=rows, alignment=TABLE_ALIGNMENT)
+    return (
+        totals,
+        table(
+            headers=[key] + headers,
+            rows=rows,
+            row_colors=row_colors,
+            alignment=TABLE_ALIGNMENT,
+        ),
+    )
+
+
+def color_match(rows):
+    row_colors = []
+    for row in rows:
+        if row.get(JobStatus.HELD) != 0:
+            row_colors.append(Color.RED)
+        elif row.get(JobStatus.COMPLETED) == row.get("TOTAL"):
+            row_colors.append(Color.GREEN)
+        elif row.get(JobStatus.IDLE) == row.get("TOTAL"):
+            row_colors.append(Color.BLUE)
+        elif row.get(JobStatus.RUNNING) != 0:
+            row_colors.append(Color.CYAN)
+        else:
+            row_colors.append(Color.GREY)
+    return row_colors
 
 
 def group_clusters_by(clusters, attribute):
@@ -510,7 +534,6 @@ def group_clusters_by(clusters, attribute):
     groups = collections.defaultdict(list)
     for cluster in clusters:
         groups[getter(cluster)].append(cluster)
-
     return groups
 
 
@@ -680,7 +703,18 @@ JOB_EVENT_STATUS_TRANSITIONS = {
 }
 
 
-def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None):
+class Color(str, enum.Enum):
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    CYAN = "\033[36m"
+    BLUE = "\033[34m"
+    GREY = "\033[37m"
+    ENDC = "\033[0m"
+
+
+def table(
+    headers, rows, row_colors, fill="", header_fmt=None, row_fmt=None, alignment=None
+):
     if header_fmt is None:
         header_fmt = lambda _: _
     if row_fmt is None:
@@ -692,7 +726,6 @@ def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None)
     lengths = [len(str(h)) for h in headers]
 
     align_methods = [alignment.get(h, "center") for h in headers]
-
     processed_rows = []
     for row in rows:
         processed_rows.append([str(row.get(key, fill)) for key in headers])
@@ -708,13 +741,17 @@ def table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None)
 
     lines = [
         row_fmt(
-            "  ".join(getattr(f, a)(l) for f, l, a in zip(row, lengths, align_methods))
+            row_colors[row_num]
+            + "  ".join(
+                getattr(f, a)(l)
+                for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
+            )
+            + Color.ENDC
         )
-        for row in processed_rows
+        for row_num, row in enumerate(processed_rows)
     ]
 
     output = "\n".join([header] + lines)
-
     return output
 
 
