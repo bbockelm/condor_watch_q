@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 
 # Copyright 2019 HTCondor Team, Computer Sciences Department,
 # University of Wisconsin-Madison, WI.
@@ -40,23 +40,23 @@ def parse_args():
             """
             Track the status of HTCondor jobs over time without repeatedly 
             querying the Schedd.
-            
+
             If no users, cluster ids, or event logs are given, condor_watch_q will 
             default to tracking all of the current user's jobs.
-            
+
             Any option beginning with a single "-" can be specified by its unique
             prefix. For example, these commands are all equivalent:
-            
+
                 condor_watch_q -clusters 12345
                 condor_watch_q -clu 12345
                 condor_watch_q -c 12345
-                
+
             By default, condor_watch_q will not exit on its own. You can tell it
             to exit when certain conditions are met. For example, to exit when
             all of the jobs it is tracking are done (with exit code 0) or when any
             job is held (with exit code 1), run
-            
-                condor_watch_q -exit all done 0 -exit any held 1
+
+                condor_watch_q -exit all,done,0 -exit any,held,1
             """
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -92,14 +92,13 @@ def parse_args():
         help=textwrap.dedent(
             """
             Specify conditions under which condor_watch_q should exit. 
-            To specify additional conditions, pass this option again.
-            
+
             GROUPER is one of {{{}}}.
-            
+
             JOB_STATUS is one of {{{}}}.
-            
+
             "active" means "in the queue".
-            
+
             To specify multiple exit conditions, pass this option multiple times.
             """.format(
                 ", ".join(EXIT_GROUPERS.keys()), ", ".join(EXIT_JOB_STATUS_CHECK.keys())
@@ -118,7 +117,14 @@ def parse_args():
         action="store",
         default="batch",
         choices=("batch", "log", "cluster"),
-        help="Select what to group jobs by.",
+        help=textwrap.dedent(
+            """
+            Select what attribute to group jobs by.
+    
+            Note that batch names can only be determined if the tracked jobs were
+            found in the queue; if they were not, a default batch name is used.
+            """
+        ),
     )
 
     parser.add_argument(
@@ -126,6 +132,12 @@ def parse_args():
     )
 
     args = parser.parse_args()
+
+    args.groupby = {
+        "log": "event_log_path",
+        "cluster": "cluster_id",
+        "batch": "batch_name",
+    }[args.groupby]
 
     return args
 
@@ -182,7 +194,7 @@ def cli():
         batches=args.batches,
         exit_conditions=args.exit,
         abbreviate_path_components=args.abbreviate,
-        groupby=args.groupby,
+        group_by=args.groupby,
     )
 
 
@@ -196,13 +208,13 @@ EXIT_JOB_STATUS_CHECK = {
 
 
 def watch_q(
-        users=None,
-        cluster_ids=None,
-        event_logs=None,
-        batches=None,
-        exit_conditions=None,
-        abbreviate_path_components=False,
-        groupby="log",
+    users=None,
+    cluster_ids=None,
+    event_logs=None,
+    batches=None,
+    exit_conditions=None,
+    abbreviate_path_components=False,
+    group_by="log",
 ):
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
@@ -210,20 +222,13 @@ def watch_q(
         exit_conditions = []
 
     cluster_ids, event_logs, batch_names = find_job_event_logs(
-        users, cluster_ids, event_logs, batches,
+        users, cluster_ids, event_logs, batches
     )
     if cluster_ids is not None and len(cluster_ids) == 0:
         print("No jobs found")
         sys.exit(0)
 
     tracker = JobStateTracker(event_logs, batch_names)
-
-    # TODO: this should happen during argument parsing
-    groupby = {
-        'log': 'event_log_path',
-        'cluster': 'cluster_id',
-        'batch': 'batch_name',
-    }[groupby]
 
     exit_checks = []
     for grouper, checker, exit_code in exit_conditions:
@@ -259,10 +264,23 @@ def watch_q(
                     "\n".join("{}  {}".format(now, m) for m in processing_messages),
                     file=sys.stderr,
                 )
-            
-            msg = table_by(tracker.clusters, groupby, abbreviate_path_components=abbreviate_path_components)
+
+            totals, msg = table_by(
+                tracker.clusters,
+                group_by,
+                abbreviate_path_components=abbreviate_path_components,
+            )
+            summary = "{} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(
+                totals[TOTAL],
+                totals[JobStatus.COMPLETED],
+                totals[JobStatus.REMOVED],
+                totals[JobStatus.IDLE],
+                totals[JobStatus.RUNNING],
+                totals[JobStatus.HELD],
+                totals[JobStatus.SUSPENDED],
+            )
             msg = msg.splitlines()
-            msg += ["", "Updated at {}".format(now)]
+            msg += ["", summary, "", "Updated at {}".format(now)]
             msg = "\n".join(msg)
 
             print(msg)
@@ -448,31 +466,43 @@ class JobStateTracker:
 
 def table_by(clusters, attribute, abbreviate_path_components):
     key = {
-        'event_log_path': EVENT_LOG,
-        'cluster_id': CLUSTER_ID,
-        'batch_name': BATCH_NAME,
+        "event_log_path": EVENT_LOG,
+        "cluster_id": CLUSTER_ID,
+        "batch_name": BATCH_NAME,
     }[attribute]
 
+    totals = collections.defaultdict(int)
     rows = []
 
     for attribute_value, clusters in group_clusters_by(clusters, attribute).items():
         row_data = row_data_from_job_state(clusters)
+
+        totals[TOTAL] += row_data[TOTAL]
+
+        for status in JobStatus:
+            if status != JobStatus.TRANSFERRING_OUTPUT:
+                totals[status] += row_data[status]
+
         row_data[key] = attribute_value
         rows.append(row_data)
 
     if key == EVENT_LOG:
         for row in rows:
             row[key] = normalize_path(
-                row[key],
-                abbreviate_path_components=abbreviate_path_components,
+                row[key], abbreviate_path_components=abbreviate_path_components
             )
     rows.sort(key=lambda r: r[key])
 
     row_colors = color_match(rows)
     headers, rows = strip_empty_columns(rows)
-    
-    return table(headers=[key] + headers, rows=rows, row_colors = row_colors, alignment=TABLE_ALIGNMENT)
-    
+
+    for r in rows:
+        for x in r:
+            if r.get(x) == 0:
+                r[x] = "-"
+
+    return totals, table(headers=[key] + headers, rows=rows,row_colors = row_colors, alignment=TABLE_ALIGNMENT)
+
 def color_match(rows):
     row_colors = []
     for row_num in range(len(rows)):
@@ -489,7 +519,6 @@ def color_match(rows):
         else:
             row_colors.append(color.GREY)
     return row_colors
-
 
 def group_clusters_by(clusters, attribute):
     getter = operator.attrgetter(attribute)
@@ -526,13 +555,13 @@ def row_data_from_job_state(clusters):
                 active_job_ids.append("{}.{}".format(cluster.cluster_id, proc_id))
 
     row_data[TOTAL] = sum(row_data.values())
-    
+
     if len(active_job_ids) > 3:
         active_job_ids = [active_job_ids[0], active_job_ids[-1]]
         row_data[ACTIVE_JOBS] = " ... ".join(active_job_ids)
     else:
         row_data[ACTIVE_JOBS] = ", ".join(active_job_ids)
-    
+
     return row_data
 
 
@@ -709,68 +738,4 @@ def table(headers, rows, row_colors, fill="", header_fmt=None, row_fmt=None, ali
 
 
 if __name__ == "__main__":
-    import random
-
-    schedd = htcondor.Schedd()
-
-    home = os.path.expanduser("~")
-
-    t = str(int(time.time()))
-
-    for x in range(1, 6):
-        log = os.path.join(home, t, "{}.log".format(x))
-
-        # if x == 2:
-        #     log = os.path.join(
-        #         home,
-        #         "deeply",
-        #         "nested",
-        #         "path",
-        #         "to",
-        #         "veryveryveryveryveryveryveryveryverylong",
-        #         "{}.log".format(x),
-        #     )
-        # if x == 3:
-        #     log = os.path.join(
-        #         home,
-        #         "deeply",
-        #         "nested",
-        #         "path",
-        #         "to",
-        #         "veryveryveryberrylong",
-        #         "{}.log".format(x),
-        #     )
-        # if x == 4:
-        #     log = None
-
-        if log is not None:
-            try:
-                os.makedirs(os.path.dirname(log))
-            except OSError:
-                pass
-
-        s = dict(
-            executable="/bin/sleep",
-            arguments="1",
-            hold=False,
-            transfer_input_files="nope" if x == 4 else "",
-            jobbatchname="batch {}".format(x),
-        )
-        if log is not None:
-            s["log"] = log
-
-        sub = htcondor.Submit(s)
-        with schedd.transaction() as txn:
-            sub.queue(txn, random.randint(1, 5))
-        with schedd.transaction() as txn:
-            sub.queue(txn, random.randint(1, 5))
-
-    os.system("condor_q")
-    print()
-
-    # os.chdir(os.path.join(home, "deeply", "nested"))
-    os.chdir(os.path.expanduser("~"))
-    print("Running from", os.getcwd())
-    print("-" * 40)
-
     cli()
