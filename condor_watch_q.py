@@ -131,6 +131,10 @@ def parse_args():
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
 
+    parser.add_argument(
+        "-nocolor", action="store_true", help="Turn off color for watch queue."
+    )
+
     args = parser.parse_args()
 
     args.groupby = {
@@ -195,6 +199,7 @@ def cli():
         exit_conditions=args.exit,
         abbreviate_path_components=args.abbreviate,
         group_by=args.groupby,
+        no_color = args.nocolor,
     )
 
 
@@ -215,7 +220,9 @@ def watch_q(
     exit_conditions=None,
     abbreviate_path_components=False,
     group_by="log",
+    no_color=None,
 ):
+    #print(no_color)
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
     if exit_conditions is None:
@@ -268,6 +275,7 @@ def watch_q(
             totals, msg = table_by(
                 tracker.clusters,
                 group_by,
+                no_color,
                 abbreviate_path_components=abbreviate_path_components,
             )
             summary = "{} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(
@@ -281,6 +289,7 @@ def watch_q(
             )
             msg = msg.splitlines()
             msg += ["", summary, "", "Updated at {}".format(now)]
+            msg += [progress_bar(totals)]
             msg = "\n".join(msg)
 
             print(msg)
@@ -301,6 +310,12 @@ def watch_q(
 
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
 
+def progress_bar(totals):
+    bar_length = 60
+    filled_length = int(round(bar_length * totals[JobStatus.COMPLETED] / float(totals[TOTAL])))
+    completion_percent = round(100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1)
+    bar = '=' * filled_length + '-' * (bar_length - filled_length)
+    return '[%s] %s%s\r' % (bar, completion_percent, '%')
 
 def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
     if users is None:
@@ -464,7 +479,7 @@ class JobStateTracker:
                 yield state
 
 
-def table_by(clusters, attribute, abbreviate_path_components):
+def table_by(clusters, attribute, no_color, abbreviate_path_components):
     key = {
         "event_log_path": EVENT_LOG,
         "cluster_id": CLUSTER_ID,
@@ -493,7 +508,9 @@ def table_by(clusters, attribute, abbreviate_path_components):
             )
     rows.sort(key=lambda r: r[key])
 
-    row_colors = color_match(rows)
+    row_colors=[]
+    if not no_color:
+        row_colors = color_match(rows)
     headers, rows = strip_empty_columns(rows)
 
     for r in rows:
@@ -738,18 +755,31 @@ def table(
             getattr(str(h), a)(l) for h, l, a in zip(headers, lengths, align_methods)
         ).rstrip()
     )
-
-    lines = [
-        row_fmt(
-            row_colors[row_num]
-            + "  ".join(
-                getattr(f, a)(l)
-                for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
+    
+    #ask about how to implement logic within lambda
+    if len(row_colors) != 0:
+        lines = [
+            row_fmt(
+                row_colors[row_num]
+                + "  ".join(
+                    getattr(f, a)(l)
+                    for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
+                )
+                + Color.ENDC
             )
-            + Color.ENDC
-        )
-        for row_num, row in enumerate(processed_rows)
-    ]
+            for row_num, row in enumerate(processed_rows)
+        ]
+    else:
+        lines = [
+            row_fmt(
+                "  ".join(
+                    getattr(f, a)(l)
+                    for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
+                )
+            )
+            for row_num, row in enumerate(processed_rows)
+        ]
+
 
     output = "\n".join([header] + lines)
     return output
