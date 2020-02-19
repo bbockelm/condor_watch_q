@@ -199,7 +199,7 @@ def cli():
         exit_conditions=args.exit,
         abbreviate_path_components=args.abbreviate,
         group_by=args.groupby,
-        no_color = args.nocolor,
+        no_color=args.nocolor,
     )
 
 
@@ -222,7 +222,7 @@ def watch_q(
     group_by="log",
     no_color=None,
 ):
-    #print(no_color)
+    # print(no_color)
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
     if exit_conditions is None:
@@ -310,12 +310,18 @@ def watch_q(
 
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
 
+
 def progress_bar(totals):
     bar_length = 60
-    filled_length = int(round(bar_length * totals[JobStatus.COMPLETED] / float(totals[TOTAL])))
-    completion_percent = round(100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1)
-    bar = '=' * filled_length + '-' * (bar_length - filled_length)
-    return '[%s] %s%s\r' % (bar, completion_percent, '%')
+    filled_length = int(
+        round(bar_length * totals[JobStatus.COMPLETED] / float(totals[TOTAL]))
+    )
+    completion_percent = round(
+        100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1
+    )
+    bar = "=" * filled_length + "-" * (bar_length - filled_length)
+    return "[%s] %s%s\r" % (bar, completion_percent, "%")
+
 
 def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
     if users is None:
@@ -508,7 +514,7 @@ def table_by(clusters, attribute, no_color, abbreviate_path_components):
             )
     rows.sort(key=lambda r: r[key])
 
-    row_colors=[]
+    row_colors = []
     if not no_color:
         row_colors = color_match(rows)
     headers, rows = strip_empty_columns(rows)
@@ -755,8 +761,8 @@ def table(
             getattr(str(h), a)(l) for h, l, a in zip(headers, lengths, align_methods)
         ).rstrip()
     )
-    
-    #ask about how to implement logic within lambda
+
+    # ask about how to implement logic within lambda
     if len(row_colors) != 0:
         lines = [
             row_fmt(
@@ -779,7 +785,6 @@ def table(
             )
             for row_num, row in enumerate(processed_rows)
         ]
-
 
     output = "\n".join([header] + lines)
     return output
