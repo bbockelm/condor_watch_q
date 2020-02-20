@@ -289,7 +289,7 @@ def watch_q(
             )
             msg = msg.splitlines()
             msg += ["", summary, "", "Updated at {}".format(now)]
-            msg += [progress_bar(totals)]
+            msg += [progress_bar(totals, no_color)]
             msg = "\n".join(msg)
 
             print(msg)
@@ -311,16 +311,30 @@ def watch_q(
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
 
 
-def progress_bar(totals):
+def progress_bar(totals, no_color):
     bar_length = 60
     filled_length = int(
         round(bar_length * totals[JobStatus.COMPLETED] / float(totals[TOTAL]))
     )
+    held_length = int(round(bar_length * totals[JobStatus.HELD] / float(totals[TOTAL])))
     completion_percent = round(
         100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1
     )
-    bar = "=" * filled_length + "-" * (bar_length - filled_length)
-    return "[%s] %s%s\r" % (bar, completion_percent, "%")
+    held_percent = round(100.0 * totals[JobStatus.HELD] / float(totals[TOTAL]), 1)
+    bar = (
+        "=" * filled_length
+        + Color.RED
+        + "=" * held_length
+        + Color.ENDC
+        + "-" * (bar_length - filled_length - held_length)
+    )
+    return "[%s] Completed: %s%s, Held: %s%s\r" % (
+        bar,
+        completion_percent,
+        "%",
+        held_percent,
+        "%",
+    )
 
 
 def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
@@ -763,6 +777,15 @@ def table(
     )
 
     # ask about how to implement logic within lambda
+    lines = [
+        row_fmt(
+            "  ".join(
+                getattr(f, a)(l)
+                for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
+            )
+        )
+        for row_num, row in enumerate(processed_rows)
+    ]
     if len(row_colors) != 0:
         lines = [
             row_fmt(
