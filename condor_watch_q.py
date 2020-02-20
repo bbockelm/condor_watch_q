@@ -321,19 +321,15 @@ def progress_bar(totals, no_color):
         100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1
     )
     held_percent = round(100.0 * totals[JobStatus.HELD] / float(totals[TOTAL]), 1)
-    
-    if not no_color:
-        complete_bar = Color.GREEN+"="*complete_length+Color.ENDC
-        held_bar = Color.RED + "="*held_length+Color.ENDC
-    else:
-        complete_bar = "="*complete_length
-        held_bar = "!"*held_length
 
-    bar = (
-        complete_bar
-        +held_bar
-        + "-" * (bar_length - complete_length - held_length)
-    )
+    if not no_color:
+        complete_bar = Color.GREEN + "=" * complete_length + Color.ENDC
+        held_bar = Color.RED + "=" * held_length + Color.ENDC
+    else:
+        complete_bar = "=" * complete_length
+        held_bar = "!" * held_length
+
+    bar = complete_bar + held_bar + "-" * (bar_length - complete_length - held_length)
     return "[%s] Completed: %s%s, Held: %s%s\r" % (
         bar,
         completion_percent,
@@ -782,17 +778,16 @@ def table(
         ).rstrip()
     )
 
-    # ask about how to implement logic within lambda
     lines = [
-            row_fmt(
-                "  ".join(
-                    getattr(f, a)(l)
-                    for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
-                )
+        row_fmt(
+            "  ".join(
+                getattr(f, a)(l)
+                for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
             )
-            for row_num, row in enumerate(processed_rows)
-        ]
-        
+        )
+        for row_num, row in enumerate(processed_rows)
+    ]
+
     if len(row_colors) != 0:
         for line_num, line in enumerate(lines):
             lines[line_num] = row_colors[line_num] + line + Color.ENDC
