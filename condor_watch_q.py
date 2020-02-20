@@ -134,6 +134,9 @@ def parse_args():
     parser.add_argument(
         "-nocolor", action="store_true", help="Turn off color for watch queue."
     )
+    parser.add_argument(
+        "-noprogress", action="store_true", help="Turn off progress bar."
+    )
 
     args = parser.parse_args()
 
@@ -200,6 +203,7 @@ def cli():
         abbreviate_path_components=args.abbreviate,
         group_by=args.groupby,
         no_color=args.nocolor,
+        no_progress_bar=args.noprogress,
     )
 
 
@@ -221,6 +225,7 @@ def watch_q(
     abbreviate_path_components=False,
     group_by="log",
     no_color=None,
+    no_progress_bar=None,
 ):
     # print(no_color)
     if users is None and cluster_ids is None and event_logs is None:
@@ -289,7 +294,8 @@ def watch_q(
             )
             msg = msg.splitlines()
             msg += ["", summary, "", "Updated at {}".format(now)]
-            msg += [progress_bar(totals, no_color)]
+            if not no_progress_bar:
+                msg += [progress_bar(totals, no_color)]
             msg = "\n".join(msg)
 
             print(msg)
@@ -324,7 +330,7 @@ def progress_bar(totals, no_color):
 
     if not no_color:
         complete_bar = Color.GREEN + "=" * complete_length + Color.ENDC
-        held_bar = Color.RED + "=" * held_length + Color.ENDC
+        held_bar = Color.RED + "!" * held_length + Color.ENDC
     else:
         complete_bar = "=" * complete_length
         held_bar = "!" * held_length
