@@ -227,7 +227,6 @@ def watch_q(
     no_color=None,
     no_progress_bar=None,
 ):
-    # print(no_color)
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
     if exit_conditions is None:
@@ -336,12 +335,8 @@ def progress_bar(totals, no_color):
         held_bar = "!" * held_length
 
     bar = complete_bar + held_bar + "-" * (bar_length - complete_length - held_length)
-    return "[%s] Completed: %s%s, Held: %s%s\r" % (
-        bar,
-        completion_percent,
-        "%",
-        held_percent,
-        "%",
+    return "[{}] Completed: {}{}, Held: {}{}\r".format(
+        bar, completion_percent, "%", held_percent, "%",
     )
 
 
