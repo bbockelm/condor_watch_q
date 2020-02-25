@@ -131,6 +131,13 @@ def parse_args():
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
 
+    parser.add_argument(
+        "-nocolor", action="store_true", help="Turn off color for watch queue."
+    )
+    parser.add_argument(
+        "-noprogress", action="store_true", help="Turn off progress bar."
+    )
+
     args = parser.parse_args()
 
     args.groupby = {
@@ -195,6 +202,8 @@ def cli():
         exit_conditions=args.exit,
         abbreviate_path_components=args.abbreviate,
         group_by=args.groupby,
+        no_color=args.nocolor,
+        no_progress_bar=args.noprogress,
     )
 
 
@@ -215,6 +224,8 @@ def watch_q(
     exit_conditions=None,
     abbreviate_path_components=False,
     group_by="log",
+    no_color=None,
+    no_progress_bar=None,
 ):
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
@@ -268,6 +279,7 @@ def watch_q(
             totals, msg = table_by(
                 tracker.clusters,
                 group_by,
+                no_color,
                 abbreviate_path_components=abbreviate_path_components,
             )
             summary = "{} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(
@@ -281,6 +293,8 @@ def watch_q(
             )
             msg = msg.splitlines()
             msg += ["", summary, "", "Updated at {}".format(now)]
+            if not no_progress_bar:
+                msg += [progress_bar(totals, no_color)]
             msg = "\n".join(msg)
 
             print(msg)
@@ -300,6 +314,30 @@ def watch_q(
 
 
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
+
+
+def progress_bar(totals, no_color):
+    bar_length = 60
+    complete_length = int(
+        round(bar_length * totals[JobStatus.COMPLETED] / float(totals[TOTAL]))
+    )
+    held_length = int(round(bar_length * totals[JobStatus.HELD] / float(totals[TOTAL])))
+    completion_percent = round(
+        100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1
+    )
+    held_percent = round(100.0 * totals[JobStatus.HELD] / float(totals[TOTAL]), 1)
+
+    if not no_color:
+        complete_bar = Color.GREEN + "=" * complete_length + Color.ENDC
+        held_bar = Color.RED + "!" * held_length + Color.ENDC
+    else:
+        complete_bar = "=" * complete_length
+        held_bar = "!" * held_length
+
+    bar = complete_bar + held_bar + "-" * (bar_length - complete_length - held_length)
+    return "[{}] Completed: {}{}, Held: {}{}\r".format(
+        bar, completion_percent, "%", held_percent, "%",
+    )
 
 
 def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
@@ -464,7 +502,7 @@ class JobStateTracker:
                 yield state
 
 
-def table_by(clusters, attribute, abbreviate_path_components):
+def table_by(clusters, attribute, no_color, abbreviate_path_components):
     key = {
         "event_log_path": EVENT_LOG,
         "cluster_id": CLUSTER_ID,
@@ -493,7 +531,9 @@ def table_by(clusters, attribute, abbreviate_path_components):
             )
     rows.sort(key=lambda r: r[key])
 
-    row_colors = color_match(rows)
+    row_colors = []
+    if not no_color:
+        row_colors = color_match(rows)
     headers, rows = strip_empty_columns(rows)
 
     for r in rows:
@@ -741,15 +781,17 @@ def table(
 
     lines = [
         row_fmt(
-            row_colors[row_num]
-            + "  ".join(
+            "  ".join(
                 getattr(f, a)(l)
                 for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
             )
-            + Color.ENDC
         )
         for row_num, row in enumerate(processed_rows)
     ]
+
+    if len(row_colors) != 0:
+        for line_num, line in enumerate(lines):
+            lines[line_num] = row_colors[line_num] + line + Color.ENDC
 
     output = "\n".join([header] + lines)
     return output
