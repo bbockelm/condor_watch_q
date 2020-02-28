@@ -128,6 +128,39 @@ def parse_args():
     )
 
     parser.add_argument(
+        "-progress",
+        "-no-progress",
+        action=NegateAction,
+        nargs=0,
+        default=True,
+        help="Enable/disable the progress bar. Enabled by default.",
+    )
+    parser.add_argument(
+        "-summary",
+        "-no-summary",
+        action=NegateAction,
+        nargs=0,
+        default=True,
+        help="Enable/disable the summary line. Enabled by default.",
+    )
+    parser.add_argument(
+        "-color",
+        "-no-color",
+        action=NegateAction,
+        nargs=0,
+        default=sys.stdout.isatty(),
+        help="Enable/disable colored output. Enabled by default if STDOUT is a terminal.",
+    )
+    parser.add_argument(
+        "-refresh",
+        "-no-refresh",
+        action=NegateAction,
+        nargs=0,
+        default=sys.stdout.isatty(),
+        help="Enable/disable refreshing output (instead of appending). Enabled by default if STDOUT is a terminal.",
+    )
+
+    parser.add_argument(
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
 
@@ -187,6 +220,11 @@ class ExitConditions(argparse.Action):
         getattr(args, self.dest).append((grouper, status, exit_code))
 
 
+class NegateAction(argparse.Action):
+    def __call__(self, parser, args, values, option_string=None):
+        setattr(args, self.dest, option_string.rstrip("-").startswith("no"))
+
+
 def cli():
     args = parse_args()
 
@@ -200,10 +238,12 @@ def cli():
         event_logs=args.files,
         batches=args.batches,
         exit_conditions=args.exit,
-        abbreviate_path_components=args.abbreviate,
         group_by=args.groupby,
-        no_color=args.nocolor,
-        no_progress_bar=args.noprogress,
+        progress_bar=args.progress,
+        summary=args.summary,
+        color=args.color,
+        refresh=args.refresh,
+        abbreviate_path_components=args.abbreviate,
     )
 
 
@@ -216,21 +256,44 @@ EXIT_JOB_STATUS_CHECK = {
 }
 
 
+TOTAL = "TOTAL"
+ACTIVE_JOBS = "JOB_IDS"
+EVENT_LOG = "LOG"
+CLUSTER_ID = "CLUSTER"
+BATCH_NAME = "BATCH"
+
+
+# attribute is the Python attribute name of the Cluster object
+# key is the key in the events and job rows
+GROUPBY_ATTRIBUTE_TO_AD_KEY = {
+    "event_log_path": EVENT_LOG,
+    "cluster_id": CLUSTER_ID,
+    "batch_name": BATCH_NAME,
+}
+GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
+
+
 def watch_q(
     users=None,
     cluster_ids=None,
     event_logs=None,
     batches=None,
     exit_conditions=None,
+    group_by="batch_name",
+    progress_bar=True,
+    summary=True,
+    color=True,
+    refresh=True,
     abbreviate_path_components=False,
-    group_by="log",
-    no_color=None,
-    no_progress_bar=None,
 ):
     if users is None and cluster_ids is None and event_logs is None:
         users = [getpass.getuser()]
     if exit_conditions is None:
         exit_conditions = []
+
+    key = GROUPBY_ATTRIBUTE_TO_AD_KEY[group_by]
+
+    row_fmt = (lambda s, r: colorize(s, determine_row_color(r))) if color else None
 
     cluster_ids, event_logs, batch_names = find_job_event_logs(
         users, cluster_ids, event_logs, batches
@@ -252,20 +315,24 @@ def watch_q(
         msg = None
 
         while True:
-            reading = "Reading new events..."
-            print(reading, end="")
-            sys.stdout.flush()
-            processing_messages = tracker.process_events()
-            print("\r" + (len(reading) * " ") + "\r", end="")
-            sys.stdout.flush()
+            if refresh:
+                reading = "Reading new events..."
+                print(reading, end="")
+                sys.stdout.flush()
 
-            if msg is not None:
+            processing_messages = tracker.process_events()
+
+            if refresh:
+                print("\r" + (len(reading) * " ") + "\r", end="")
+                sys.stdout.flush()
+
+            if msg is not None and refresh:
                 prev_lines = list(msg.splitlines())
                 prev_len_lines = [len(line) for line in prev_lines]
 
                 move = "\033[{}A\r".format(len(prev_len_lines))
-                clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
-                sys.stdout.write(move + clear + move)
+                refresh = "\n".join(" " * len(line) for line in prev_lines) + "\n"
+                sys.stdout.write(move + refresh + move)
                 sys.stdout.flush()
 
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -276,26 +343,40 @@ def watch_q(
                     file=sys.stderr,
                 )
 
-            totals, msg = table_by(
-                tracker.clusters,
-                group_by,
-                no_color,
-                abbreviate_path_components=abbreviate_path_components,
+            rows, totals = group_jobs_by(tracker.clusters, key,)
+
+            headers, rows = strip_empty_columns(rows)
+
+            # strip out 0 values
+            rows = [{k: v for k, v in row.items() if v != 0} for row in rows]
+
+            if key == EVENT_LOG:
+                for row in rows:
+                    row[key] = normalize_path(
+                        row[key], abbreviate_path_components=abbreviate_path_components
+                    )
+
+            rows.sort(key=lambda r: r[key])
+
+            msg = make_table(
+                headers=[key] + headers,
+                rows=rows,
+                row_fmt=row_fmt,
+                alignment=TABLE_ALIGNMENT,
+                fill="-",
             )
-            summary = "{} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(
-                totals[TOTAL],
-                totals[JobStatus.COMPLETED],
-                totals[JobStatus.REMOVED],
-                totals[JobStatus.IDLE],
-                totals[JobStatus.RUNNING],
-                totals[JobStatus.HELD],
-                totals[JobStatus.SUSPENDED],
-            )
-            msg = msg.splitlines()
-            msg += ["", summary, "", "Updated at {}".format(now)]
-            if not no_progress_bar:
-                msg += [progress_bar(totals, no_color)]
+
+            if progress_bar:
+                msg += ["", make_progress_bar(totals, color)]
+
+            if summary:
+                msg += ["", make_summary(totals)]
+
+            msg += ["", "Updated at {}".format(now)]
             msg = "\n".join(msg)
+
+            if not refresh:
+                msg += "\n"
 
             print(msg)
 
@@ -403,13 +484,6 @@ def query(constraint, projection=None):
     return ads
 
 
-TOTAL = "TOTAL"
-ACTIVE_JOBS = "JOB_IDS"
-EVENT_LOG = "LOG"
-CLUSTER_ID = "CLUSTER"
-BATCH_NAME = "BATCH"
-
-
 class Cluster:
     def __init__(self, cluster_id, event_log_path, batch_name):
         self.cluster_id = cluster_id
@@ -502,17 +576,11 @@ class JobStateTracker:
                 yield state
 
 
-def table_by(clusters, attribute, no_color, abbreviate_path_components):
-    key = {
-        "event_log_path": EVENT_LOG,
-        "cluster_id": CLUSTER_ID,
-        "batch_name": BATCH_NAME,
-    }[attribute]
-
+def group_jobs_by(clusters, key):
     totals = collections.defaultdict(int)
     rows = []
 
-    for attribute_value, clusters in group_clusters_by(clusters, attribute).items():
+    for attribute_value, clusters in group_clusters_by(clusters, key).items():
         row_data = row_data_from_job_state(clusters)
 
         totals[TOTAL] += row_data[TOTAL]
@@ -524,52 +592,47 @@ def table_by(clusters, attribute, no_color, abbreviate_path_components):
         row_data[key] = attribute_value
         rows.append(row_data)
 
-    if key == EVENT_LOG:
-        for row in rows:
-            row[key] = normalize_path(
-                row[key], abbreviate_path_components=abbreviate_path_components
-            )
-    rows.sort(key=lambda r: r[key])
-
-    row_colors = []
-    if not no_color:
-        row_colors = color_match(rows)
-    headers, rows = strip_empty_columns(rows)
-
-    for r in rows:
-        for x in r:
-            if r.get(x) == 0:
-                r[x] = "-"
-
-    return (
-        totals,
-        table(
-            headers=[key] + headers,
-            rows=rows,
-            row_colors=row_colors,
-            alignment=TABLE_ALIGNMENT,
-        ),
-    )
+    return rows, totals
 
 
-def color_match(rows):
-    row_colors = []
-    for row in rows:
-        if row.get(JobStatus.HELD) != 0:
-            row_colors.append(Color.RED)
-        elif row.get(JobStatus.COMPLETED) == row.get("TOTAL"):
-            row_colors.append(Color.GREEN)
-        elif row.get(JobStatus.IDLE) == row.get("TOTAL"):
-            row_colors.append(Color.BLUE)
-        elif row.get(JobStatus.RUNNING) != 0:
-            row_colors.append(Color.CYAN)
-        else:
-            row_colors.append(Color.GREY)
-    return row_colors
+class Color(str, enum.Enum):
+    BLACK = "\033[30m"
+    RED = "\033[31m"
+    BRIGHT_RED = "\033[31;1m"
+    GREEN = "\033[32m"
+    BRIGHT_GREEN = "\033[32;1m"
+    YELLOW = "\033[33m"
+    BRIGHT_YELLOW = "\033[33;1m"
+    BLUE = "\033[34m"
+    BRIGHT_BLUE = "\033[34;1m"
+    MAGENTA = "\033[35m"
+    BRIGHT_MAGENTA = "\033[35;1m"
+    CYAN = "\033[36m"
+    BRIGHT_CYAN = "\033[36;1m"
+    WHITE = "\033[37m"
+    BRIGHT_WHITE = "\033[37;1m"
+    RESET = "\033[0m"
 
 
-def group_clusters_by(clusters, attribute):
-    getter = operator.attrgetter(attribute)
+def colorize(string, color):
+    return color + string + Color.RESET
+
+
+def determine_row_color(row):
+    if row.get(JobStatus.HELD, 0) > 0:
+        return Color.RED
+    elif row.get(JobStatus.COMPLETED) == row.get("TOTAL"):
+        return Color.GREEN
+    elif row.get(JobStatus.RUNNING, 0) > 0:
+        return Color.CYAN
+    elif row.get(JobStatus.IDLE, 0) > 0:
+        return Color.YELLOW
+    else:
+        return Color.BRIGHT_WHITE
+
+
+def group_clusters_by(clusters, key):
+    getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
 
     groups = collections.defaultdict(list)
     for cluster in clusters:
@@ -743,22 +806,11 @@ JOB_EVENT_STATUS_TRANSITIONS = {
 }
 
 
-class Color(str, enum.Enum):
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    CYAN = "\033[36m"
-    BLUE = "\033[34m"
-    GREY = "\033[37m"
-    ENDC = "\033[0m"
-
-
-def table(
-    headers, rows, row_colors, fill="", header_fmt=None, row_fmt=None, alignment=None
-):
+def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None):
     if header_fmt is None:
         header_fmt = lambda _: _
     if row_fmt is None:
-        row_fmt = lambda _: _
+        row_fmt = lambda _a, _b: _a
     if alignment is None:
         alignment = {}
 
@@ -783,18 +835,63 @@ def table(
         row_fmt(
             "  ".join(
                 getattr(f, a)(l)
-                for f, l, a in zip(processed_rows[row_num], lengths, align_methods)
-            )
+                for f, l, a in zip(processed_row, lengths, align_methods)
+            ),
+            original_row,
         )
-        for row_num, row in enumerate(processed_rows)
+        for original_row, processed_row in zip(rows, processed_rows)
     ]
 
-    if len(row_colors) != 0:
-        for line_num, line in enumerate(lines):
-            lines[line_num] = row_colors[line_num] + line + Color.ENDC
+    return [header] + lines
 
-    output = "\n".join([header] + lines)
-    return output
+
+def make_progress_bar(totals, color=True):
+    try:
+        bar_length = os.get_terminal_size((80, 20)).columns - 20
+    except Exception:
+        bar_length = 80 - 20
+
+    complete_length = int(
+        round(bar_length * totals[JobStatus.COMPLETED] / float(totals[TOTAL]))
+    )
+    held_length = int(round(bar_length * totals[JobStatus.HELD] / float(totals[TOTAL])))
+    run_length = int(
+        round(bar_length * totals[JobStatus.RUNNING] / float(totals[TOTAL]))
+    )
+    idle_length = int(round(bar_length * totals[JobStatus.IDLE] / float(totals[TOTAL])))
+
+    completion_percent = round(
+        100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1
+    )
+    held_percent = round(100.0 * totals[JobStatus.HELD] / float(totals[TOTAL]), 1)
+
+    complete_bar = "=" * complete_length
+    held_bar = "!" * held_length
+    run_bar = "-" * run_length
+    idle_bar = "-" * idle_length
+
+    if color:
+        complete_bar = colorize(complete_bar, Color.GREEN)
+        held_bar = colorize(held_bar, Color.RED)
+        run_bar = colorize(run_bar, Color.CYAN)
+        idle_bar = colorize(idle_bar, Color.BRIGHT_YELLOW)
+
+    bar = complete_bar + held_bar + run_bar + idle_bar
+    return "[{}] Completed: {}%, Held: {}%".format(
+        bar, completion_percent, held_percent,
+    )
+
+
+def make_summary(totals):
+    return "Total: {} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(
+        totals[TOTAL],
+        totals[JobStatus.COMPLETED],
+        totals[JobStatus.REMOVED],
+        totals[JobStatus.IDLE],
+        totals[JobStatus.RUNNING],
+        totals[JobStatus.HELD],
+        totals[JobStatus.SUSPENDED],
+    )
 
 
 if __name__ == "__main__":
