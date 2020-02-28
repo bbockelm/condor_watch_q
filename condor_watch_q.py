@@ -824,6 +824,11 @@ def make_progress_bar(totals, color=True):
         round(bar_length * totals[JobStatus.COMPLETED] / float(totals[TOTAL]))
     )
     held_length = int(round(bar_length * totals[JobStatus.HELD] / float(totals[TOTAL])))
+    run_length = int(
+        round(bar_length * totals[JobStatus.RUNNING] / float(totals[TOTAL]))
+    )
+    idle_length = int(round(bar_length * totals[JobStatus.IDLE] / float(totals[TOTAL])))
+
     completion_percent = round(
         100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1
     )
@@ -831,12 +836,16 @@ def make_progress_bar(totals, color=True):
 
     complete_bar = "=" * complete_length
     held_bar = "!" * held_length
+    run_bar = "-" * run_length
+    idle_bar = "-" * idle_length
 
     if color:
         complete_bar = colorize(complete_bar, Color.GREEN)
         held_bar = colorize(held_bar, Color.RED)
+        run_bar = colorize(run_bar, Color.CYAN)
+        idle_bar = colorize(idle_bar, Color.BRIGHT_YELLOW)
 
-    bar = complete_bar + held_bar + "-" * (bar_length - complete_length - held_length)
+    bar = complete_bar + held_bar + run_bar + idle_bar
     return "[{}] Completed: {}%, Held: {}%".format(
         bar, completion_percent, held_percent,
     )
