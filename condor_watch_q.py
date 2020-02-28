@@ -164,13 +164,6 @@ def parse_args():
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
 
-    parser.add_argument(
-        "-nocolor", action="store_true", help="Turn off color for watch queue."
-    )
-    parser.add_argument(
-        "-noprogress", action="store_true", help="Turn off progress bar."
-    )
-
     args = parser.parse_args()
 
     args.groupby = {
@@ -395,30 +388,6 @@ def watch_q(
 
 
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
-
-
-def progress_bar(totals, no_color):
-    bar_length = 60
-    complete_length = int(
-        round(bar_length * totals[JobStatus.COMPLETED] / float(totals[TOTAL]))
-    )
-    held_length = int(round(bar_length * totals[JobStatus.HELD] / float(totals[TOTAL])))
-    completion_percent = round(
-        100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1
-    )
-    held_percent = round(100.0 * totals[JobStatus.HELD] / float(totals[TOTAL]), 1)
-
-    if not no_color:
-        complete_bar = Color.GREEN + "=" * complete_length + Color.ENDC
-        held_bar = Color.RED + "!" * held_length + Color.ENDC
-    else:
-        complete_bar = "=" * complete_length
-        held_bar = "!" * held_length
-
-    bar = complete_bar + held_bar + "-" * (bar_length - complete_length - held_length)
-    return "[{}] Completed: {}{}, Held: {}{}\r".format(
-        bar, completion_percent, "%", held_percent, "%",
-    )
 
 
 def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
