@@ -28,6 +28,8 @@ import datetime
 import os
 import time
 import operator
+import tempfile
+import select
 
 import htcondor
 import classad
@@ -279,7 +281,7 @@ def watch_q(
     refresh=True,
     abbreviate_path_components=False,
 ):
-    if users is None and cluster_ids is None and event_logs is None:
+    if users is None and cluster_ids is None and event_logs is None and batches is None:
         users = [getpass.getuser()]
     if exit_conditions is None:
         exit_conditions = []
@@ -288,14 +290,15 @@ def watch_q(
 
     row_fmt = (lambda s, r: colorize(s, determine_row_color(r))) if color else None
 
-    cluster_ids, event_logs, batch_names = find_job_event_logs(
-        users, cluster_ids, event_logs, batches
-    )
+    try:
+        cluster_ids, event_logs, batch_names = find_job_event_logs(
+            users, cluster_ids, event_logs, batches
+        )
+    except Exception:
+        print("WARNING: failed to query schedd")
+        cluster_ids, event_logs, batch_names = set(), set(), {}
     if cluster_ids is not None and len(cluster_ids) == 0:
-        print("No jobs found")
-        sys.exit(0)
-
-    tracker = JobStateTracker(event_logs, batch_names)
+        print("WARNING: no jobs found")
 
     exit_checks = []
     for grouper, checker, exit_code in exit_conditions:
@@ -304,87 +307,100 @@ def watch_q(
         exit_check = EXIT_JOB_STATUS_CHECK[checker.lower()]
         exit_checks.append((exit_grouper, exit_check, exit_code, disp))
 
-    try:
-        msg = None
+    with tempfile.NamedTemporaryFile(mode="w+") as stdin_buffer:
+        event_logs.add(stdin_buffer.name)
 
-        while True:
-            if refresh:
-                reading = "Reading new events..."
-                print(reading, end="")
-                sys.stdout.flush()
+        tracker = JobStateTracker(event_logs, batch_names)
 
-            processing_messages = tracker.process_events()
+        try:
+            msg = None
 
-            if refresh:
-                print("\r" + (len(reading) * " ") + "\r", end="")
-                sys.stdout.flush()
+            while True:
+                if refresh:
+                    reading = "Reading new events..."
+                    print(reading, end="")
+                    sys.stdout.flush()
 
-            if msg is not None and refresh:
-                prev_lines = list(msg.splitlines())
-                prev_len_lines = [len(line) for line in prev_lines]
+                while True:
+                    ready, *_ = select.select([sys.stdin], [], [], 0)
+                    if ready:
+                        stdin_buffer.write(sys.stdin.readline())
+                    else:
+                        break
 
-                move = "\033[{}A\r".format(len(prev_len_lines))
-                refresh = "\n".join(" " * len(line) for line in prev_lines) + "\n"
-                sys.stdout.write(move + refresh + move)
-                sys.stdout.flush()
+                processing_messages = tracker.process_events()
 
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if refresh:
+                    print("\r" + (len(reading) * " ") + "\r", end="")
+                    sys.stdout.flush()
 
-            if len(processing_messages) > 0:
-                print(
-                    "\n".join("{}  {}".format(now, m) for m in processing_messages),
-                    file=sys.stderr,
+                if msg is not None and refresh:
+                    prev_lines = list(msg.splitlines())
+                    prev_len_lines = [len(line) for line in prev_lines]
+
+                    move = "\033[{}A\r".format(len(prev_len_lines))
+                    refresh = "\n".join(" " * len(line) for line in prev_lines) + "\n"
+                    sys.stdout.write(move + refresh + move)
+                    sys.stdout.flush()
+
+                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                if len(processing_messages) > 0:
+                    print(
+                        "\n".join("{}  {}".format(now, m) for m in processing_messages),
+                        file=sys.stderr,
+                    )
+
+                rows, totals = group_jobs_by(tracker.clusters, key,)
+
+                headers, rows = strip_empty_columns(rows)
+
+                # strip out 0 values
+                rows = [{k: v for k, v in row.items() if v != 0} for row in rows]
+
+                if key == EVENT_LOG:
+                    for row in rows:
+                        row[key] = normalize_path(
+                            row[key],
+                            abbreviate_path_components=abbreviate_path_components,
+                        )
+
+                rows.sort(key=lambda r: r[key])
+
+                msg = make_table(
+                    headers=[key] + headers,
+                    rows=rows,
+                    row_fmt=row_fmt,
+                    alignment=TABLE_ALIGNMENT,
+                    fill="-",
                 )
 
-            rows, totals = group_jobs_by(tracker.clusters, key,)
+                if progress_bar:
+                    msg += ["", make_progress_bar(totals, color)]
 
-            headers, rows = strip_empty_columns(rows)
+                if summary:
+                    msg += ["", make_summary(totals)]
 
-            # strip out 0 values
-            rows = [{k: v for k, v in row.items() if v != 0} for row in rows]
+                msg += ["", "Updated at {}".format(now)]
+                msg = "\n".join(msg)
 
-            if key == EVENT_LOG:
-                for row in rows:
-                    row[key] = normalize_path(
-                        row[key], abbreviate_path_components=abbreviate_path_components
-                    )
+                if not refresh:
+                    msg += "\n"
 
-            rows.sort(key=lambda r: r[key])
+                print(msg)
 
-            msg = make_table(
-                headers=[key] + headers,
-                rows=rows,
-                row_fmt=row_fmt,
-                alignment=TABLE_ALIGNMENT,
-                fill="-",
-            )
-
-            if progress_bar:
-                msg += ["", make_progress_bar(totals, color)]
-
-            if summary:
-                msg += ["", make_summary(totals)]
-
-            msg += ["", "Updated at {}".format(now)]
-            msg = "\n".join(msg)
-
-            if not refresh:
-                msg += "\n"
-
-            print(msg)
-
-            for grouper, checker, exit_code, disp in exit_checks:
-                if grouper((checker(s) for s in tracker.job_states)):
-                    print(
-                        'Exiting with code {} because of condition "{}" at {}'.format(
-                            exit_code, disp, now
+                for grouper, checker, exit_code, disp in exit_checks:
+                    if grouper((checker(s) for s in tracker.job_states)):
+                        print(
+                            'Exiting with code {} because of condition "{}" at {}'.format(
+                                exit_code, disp, now
+                            )
                         )
-                    )
-                    sys.exit(exit_code)
+                        sys.exit(exit_code)
 
-            time.sleep(2)
-    except KeyboardInterrupt:
-        sys.exit(0)
+                time.sleep(2)
+        except KeyboardInterrupt:
+            sys.exit(0)
 
 
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]

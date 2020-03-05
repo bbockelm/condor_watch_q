@@ -44,7 +44,7 @@ for x in range(1, 6):
 
     s = dict(
         executable="/bin/sleep",
-        arguments="1",
+        arguments="30",
         hold=False,
         transfer_input_files="nope" if x == 4 else "",
         jobbatchname="batch {}".format(x),
