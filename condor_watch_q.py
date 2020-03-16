@@ -322,11 +322,12 @@ def watch_q(
                     sys.stdout.flush()
 
                 while True:
-                    ready, *_ = select.select([sys.stdin], [], [], 0)
-                    if ready:
-                        stdin_buffer.write(sys.stdin.readline())
-                    else:
+                    line = sys.stdin.readline()
+                    if line == "":
                         break
+                    stdin_buffer.write(line)
+
+                stdin_buffer.flush()
 
                 processing_messages = tracker.process_events()
 
@@ -351,7 +352,7 @@ def watch_q(
                         file=sys.stderr,
                     )
 
-                rows, totals = group_jobs_by(tracker.clusters, key,)
+                rows, totals = group_jobs_by(tracker.clusters, key)
 
                 headers, rows = strip_empty_columns(rows)
 
@@ -854,7 +855,7 @@ def make_progress_bar(totals, color=True):
 
     bar = complete_bar + held_bar + "-" * (bar_length - complete_length - held_length)
     return "[{}] Completed: {}%, Held: {}%".format(
-        bar, completion_percent, held_percent,
+        bar, completion_percent, held_percent
     )
 
 
