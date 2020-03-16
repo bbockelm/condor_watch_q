@@ -28,6 +28,7 @@ import datetime
 import os
 import time
 import operator
+import shutil
 
 import htcondor
 import classad
@@ -336,7 +337,7 @@ def watch_q(
                     file=sys.stderr,
                 )
 
-            rows, totals = group_jobs_by(tracker.clusters, key,)
+            rows, totals = group_jobs_by(tracker.clusters, key)
 
             headers, rows = strip_empty_columns(rows)
 
@@ -816,7 +817,7 @@ def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=
 
 def make_progress_bar(totals, color=True):
     try:
-        bar_length = os.get_terminal_size((80, 20)).columns - 20
+        bar_length = shutil.get_terminal_size((80, 20)).columns - 20
     except Exception:
         bar_length = 80 - 20
 
@@ -847,7 +848,7 @@ def make_progress_bar(totals, color=True):
 
     bar = complete_bar + held_bar + run_bar + idle_bar
     return "[{}] Completed: {}%, Held: {}%".format(
-        bar, completion_percent, held_percent,
+        bar, completion_percent, held_percent
     )
 
 
