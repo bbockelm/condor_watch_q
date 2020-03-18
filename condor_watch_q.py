@@ -255,6 +255,7 @@ ACTIVE_JOBS = "JOB_IDS"
 EVENT_LOG = "LOG"
 CLUSTER_ID = "CLUSTER"
 BATCH_NAME = "BATCH"
+MIN_JOB_ID = "MIN_JOB_ID"
 
 
 # attribute is the Python attribute name of the Cluster object
@@ -350,7 +351,7 @@ def watch_q(
                         row[key], abbreviate_path_components=abbreviate_path_components
                     )
 
-            rows.sort(key=lambda r: r[key])
+            rows.sort(key=lambda r: r[MIN_JOB_ID])
 
             msg = make_table(
                 headers=[key] + headers,
@@ -607,6 +608,7 @@ def group_clusters_by(clusters, key):
     groups = collections.defaultdict(list)
     for cluster in clusters:
         groups[getter(cluster)].append(cluster)
+
     return groups
 
 
@@ -636,8 +638,14 @@ def row_data_from_job_state(clusters):
                 active_job_ids.append("{}.{}".format(cluster.cluster_id, proc_id))
 
     row_data[TOTAL] = sum(row_data.values())
+    active_job_ids.sort(key=lambda jobid: jobid.split("."))
 
-    if len(active_job_ids) > 3:
+    if len(active_job_ids) == 0:
+        row_data[MIN_JOB_ID] = "0"
+    else:
+        row_data[MIN_JOB_ID] = active_job_ids[0]
+
+    if len(active_job_ids) > 2:
         active_job_ids = [active_job_ids[0], active_job_ids[-1]]
         row_data[ACTIVE_JOBS] = " ... ".join(active_job_ids)
     else:
