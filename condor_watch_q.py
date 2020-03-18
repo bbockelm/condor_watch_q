@@ -28,6 +28,7 @@ import datetime
 import os
 import time
 import operator
+import shutil
 
 import htcondor
 import classad
@@ -337,7 +338,7 @@ def watch_q(
                     file=sys.stderr,
                 )
 
-            rows, totals = group_jobs_by(tracker.clusters, key,)
+            rows, totals = group_jobs_by(tracker.clusters, key)
 
             headers, rows = strip_empty_columns(rows)
 
@@ -603,7 +604,7 @@ def determine_row_color(row):
 
 def group_clusters_by(clusters, key):
     getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
-    
+
     groups = collections.defaultdict(list)
     for cluster in clusters:
         groups[getter(cluster)].append(cluster)
@@ -637,7 +638,7 @@ def row_data_from_job_state(clusters):
                 active_job_ids.append("{}.{}".format(cluster.cluster_id, proc_id))
 
     row_data[TOTAL] = sum(row_data.values())
-    active_job_ids.sort(key = sortByCluster)
+    active_job_ids.sort(key=lambda jobid: jobid.split("."))
 
     if len(active_job_ids) == 0:
         row_data[MIN_JOB_ID] = "0"
@@ -652,9 +653,6 @@ def row_data_from_job_state(clusters):
 
     return row_data
 
-def sortByCluster(cluster):
-    temp = cluster.split(".")
-    return temp[0]
 
 def normalize_path(path, abbreviate_path_components=False):
     possibilities = []
@@ -827,7 +825,7 @@ def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=
 
 def make_progress_bar(totals, color=True):
     try:
-        bar_length = os.get_terminal_size((80, 20)).columns - 20
+        bar_length = shutil.get_terminal_size((80, 20)).columns - 20
     except Exception:
         bar_length = 80 - 20
 
@@ -858,7 +856,7 @@ def make_progress_bar(totals, color=True):
 
     bar = complete_bar + held_bar + run_bar + idle_bar
     return "[{}] Completed: {}%, Held: {}%".format(
-        bar, completion_percent, held_percent,
+        bar, completion_percent, held_percent
     )
 
 
