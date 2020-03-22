@@ -281,7 +281,7 @@ def watch_q(
     refresh=True,
     abbreviate_path_components=False,
 ):
-    if users is None and cluster_ids is None and event_logs is None:
+    if users is None and cluster_ids is None and event_logs is None and batches is None:
         users = [getpass.getuser()]
     if exit_conditions is None:
         exit_conditions = []
