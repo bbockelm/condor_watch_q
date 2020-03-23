@@ -29,6 +29,8 @@ import os
 import time
 import operator
 import shutil
+import re
+import contextlib
 
 import htcondor
 import classad
@@ -144,6 +146,14 @@ def parse_args():
     )
 
     parser.add_argument(
+        "-table",
+        "-no-table",
+        action=NegateAction,
+        nargs=0,
+        default=True,
+        help="Enable/disable the table. Enabled by default.",
+    )
+    parser.add_argument(
         "-progress",
         "-no-progress",
         action=NegateAction,
@@ -158,6 +168,21 @@ def parse_args():
         nargs=0,
         default=True,
         help="Enable/disable the summary line. Enabled by default.",
+    )
+    parser.add_argument(
+        "-summary-type",
+        action="store",
+        choices=("totals", "percentages"),
+        default="totals",
+        help="Choose what to display on the summary line. By default, show totals.",
+    )
+    parser.add_argument(
+        "-updated-at",
+        "-no-updated-at",
+        action=NegateAction,
+        nargs=0,
+        default=True,
+        help='Enable/disable the "updated at" line. Enabled by default.',
     )
     parser.add_argument(
         "-color",
@@ -250,8 +275,11 @@ def cli():
         schedd=args.schedd,
         exit_conditions=args.exit,
         group_by=args.groupby,
+        table=args.table,
         progress_bar=args.progress,
         summary=args.summary,
+        summary_type=args.summary_type,
+        updated_at=args.updated_at,
         color=args.color,
         refresh=args.refresh,
         abbreviate_path_components=args.abbreviate,
@@ -272,7 +300,6 @@ ACTIVE_JOBS = "JOB_IDS"
 EVENT_LOG = "LOG"
 CLUSTER_ID = "CLUSTER"
 BATCH_NAME = "BATCH"
-MIN_JOB_ID = "MIN_JOB_ID"
 
 
 # attribute is the Python attribute name of the Cluster object
@@ -294,8 +321,11 @@ def watch_q(
     schedd=None,
     exit_conditions=None,
     group_by="batch_name",
+    table=True,
     progress_bar=True,
     summary=True,
+    summary_type="totals",
+    updated_at=True,
     color=True,
     refresh=True,
     abbreviate_path_components=False,
@@ -329,68 +359,85 @@ def watch_q(
         msg = None
 
         while True:
-            if refresh:
-                reading = "Reading new events..."
-                print(reading, end="")
-                sys.stdout.flush()
-
-            processing_messages = tracker.process_events()
-
-            if refresh:
-                print("\r" + (len(reading) * " ") + "\r", end="")
-                sys.stdout.flush()
+            with display_temporary_message("Reading new events...", enabled=refresh):
+                processing_messages = tracker.process_events()
 
             if msg is not None and refresh:
                 prev_lines = list(msg.splitlines())
                 prev_len_lines = [len(line) for line in prev_lines]
 
                 move = "\033[{}A\r".format(len(prev_len_lines))
-                refresh = "\n".join(" " * len(line) for line in prev_lines) + "\n"
-                sys.stdout.write(move + refresh + move)
+                clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
+                sys.stdout.write(move + clear + move)
                 sys.stdout.flush()
 
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             if len(processing_messages) > 0:
                 print(
-                    "\n".join("{}  {}".format(now, m) for m in processing_messages),
+                    "\n".join("{} | {}".format(now, m) for m in processing_messages),
                     file=sys.stderr,
                 )
 
-            rows, totals = group_jobs_by(tracker.clusters, key)
+            groups_by_key = group_clusters_by_key(tracker.clusters, key)
+            rows_by_key, totals = make_rows_from_groups(groups_by_key, key)
 
-            headers, rows = strip_empty_columns(rows)
+            headers, rows_by_key = strip_empty_columns(rows_by_key)
 
             # strip out 0 values
-            rows = [{k: v for k, v in row.items() if v != 0} for row in rows]
+            rows_by_key = {
+                key: {k: v for k, v in row.items() if v != 0}
+                for key, row in rows_by_key.items()
+            }
 
-            if key == EVENT_LOG:
-                for row in rows:
-                    row[key] = normalize_path(
-                        row[key], abbreviate_path_components=abbreviate_path_components
-                    )
+            if key == EVENT_LOG and abbreviate_path_components:
+                for row in rows_by_key.values():
+                    row[key] = abbreviate_path(row[key])
 
-            rows.sort(key=lambda r: r[MIN_JOB_ID])
-
-            msg = make_table(
-                headers=[key] + headers,
-                rows=rows,
-                row_fmt=row_fmt,
-                alignment=TABLE_ALIGNMENT,
-                fill="-",
+            rows_by_key = sorted(
+                rows_by_key.items(),
+                key=lambda key_row: min(
+                    cluster.cluster_id for cluster in groups_by_key[key_row[0]]
+                ),
             )
 
+            try:
+                width = shutil.get_terminal_size((80, 20)).columns - 1
+            except AttributeError:  # Python 2 is missing shutil.get_terminal_size
+                width = 79
+            width = min(width, 79)
+
+            msg = []
+
+            if table:
+                msg += make_table(
+                    headers=[key] + headers,
+                    rows=[row for _, row in rows_by_key],
+                    row_fmt=row_fmt,
+                    alignment=TABLE_ALIGNMENT,
+                    fill="-",
+                )
+                msg += [""]
+
             if progress_bar:
-                msg += ["", make_progress_bar(totals, color)]
+                msg += make_progress_bar(totals=totals, width=width, color=color)
+                msg += [""]
 
             if summary:
-                msg += ["", make_summary(totals)]
+                if summary_type == "totals":
+                    msg += make_summary_with_totals(totals, width=width)
+                elif summary_type == "percentages":
+                    msg += make_summary_with_percentages(totals, width=width)
+                msg += [""]
 
-            msg += ["", "Updated at {}".format(now)]
-            msg = "\n".join(msg)
+            if updated_at:
+                msg += ["Updated at {}".format(now)] + [""]
+
+            # msg[:-1] because we need to strip the last blank section delimiter line off
+            msg = "\n".join(msg[:-1])
 
             if not refresh:
-                msg += "\n"
+                msg += "\n..."
 
             print(msg)
 
@@ -406,6 +453,21 @@ def watch_q(
             time.sleep(2)
     except KeyboardInterrupt:
         sys.exit(0)
+
+
+@contextlib.contextmanager
+def display_temporary_message(msg, enabled=True):
+    """Display a single-line message until the context ends."""
+    if enabled:
+        print(msg, end="")
+        sys.stdout.flush()
+
+        yield
+
+        print("\r{}\r".format(" " * len(msg)), end="")
+        sys.stdout.flush()
+    else:
+        yield
 
 
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
@@ -575,21 +637,23 @@ class JobStateTracker:
                 yield state
 
 
-def group_jobs_by(clusters, key):
+def make_rows_from_groups(groups, key):
     totals = collections.defaultdict(int)
-    rows = []
+    rows = {}
 
-    for attribute_value, clusters in group_clusters_by(clusters, key).items():
+    for attribute_value, clusters in groups.items():
         row_data = row_data_from_job_state(clusters)
 
         totals[TOTAL] += row_data[TOTAL]
-
         for status in JobStatus:
-            if status != JobStatus.TRANSFERRING_OUTPUT:
-                totals[status] += row_data[status]
+            totals[status] += row_data[status]
 
-        row_data[key] = attribute_value
-        rows.append(row_data)
+        if key == EVENT_LOG:
+            row_data[key] = normalize_path(attribute_value)
+        else:
+            row_data[key] = attribute_value
+
+        rows[attribute_value] = row_data
 
     return rows, totals
 
@@ -630,7 +694,7 @@ def determine_row_color(row):
         return Color.BRIGHT_WHITE
 
 
-def group_clusters_by(clusters, key):
+def group_clusters_by_key(clusters, key):
     getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
 
     groups = collections.defaultdict(list)
@@ -640,18 +704,18 @@ def group_clusters_by(clusters, key):
     return groups
 
 
-def strip_empty_columns(rows):
+def strip_empty_columns(rows_by_key):
     dont_include = set()
     for h in HEADERS:
-        if all((row[h] == 0 for row in rows)):
+        if all((row[h] == 0 for row in rows_by_key.values())):
             dont_include.add(h)
     dont_include -= ALWAYS_INCLUDE
     headers = [h for h in HEADERS if h not in dont_include]
     for row_data in dont_include:
-        for row in rows:
+        for row in rows_by_key.values():
             row.pop(row_data)
 
-    return headers, rows
+    return headers, rows_by_key
 
 
 def row_data_from_job_state(clusters):
@@ -668,11 +732,6 @@ def row_data_from_job_state(clusters):
     row_data[TOTAL] = sum(row_data.values())
     active_job_ids.sort(key=lambda jobid: jobid.split("."))
 
-    if len(active_job_ids) == 0:
-        row_data[MIN_JOB_ID] = "0"
-    else:
-        row_data[MIN_JOB_ID] = active_job_ids[0]
-
     if len(active_job_ids) > 2:
         active_job_ids = [active_job_ids[0], active_job_ids[-1]]
         row_data[ACTIVE_JOBS] = " ... ".join(active_job_ids)
@@ -682,7 +741,7 @@ def row_data_from_job_state(clusters):
     return row_data
 
 
-def normalize_path(path, abbreviate_path_components=False):
+def normalize_path(path):
     possibilities = []
 
     abs = os.path.abspath(path)
@@ -697,9 +756,6 @@ def normalize_path(path, abbreviate_path_components=False):
     relative_to_cwd = os.path.relpath(path, cwd)
     if not relative_to_cwd.startswith("../"):  # i.e, it is not *above* the cwd
         possibilities.append(os.path.join(".", relative_to_cwd))
-
-    if abbreviate_path_components:
-        possibilities = map(abbreviate_path, possibilities)
 
     return min(possibilities, key=len)
 
@@ -851,53 +907,116 @@ def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=
     return [header] + lines
 
 
-def make_progress_bar(totals, color=True):
-    try:
-        bar_length = shutil.get_terminal_size((80, 20)).columns - 20
-    except Exception:
-        bar_length = 80 - 20
+ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-    complete_length = int(
-        round(bar_length * totals[JobStatus.COMPLETED] / float(totals[TOTAL]))
+
+def strip_ansi(string):
+    return ANSI_ESCAPE_RE.sub("", string)
+
+
+def make_progress_bar(totals, width=None, color=True):
+    width = width or 79
+    width -= 2  # account for the wrapping [ ]
+
+    num_total = float(totals[TOTAL])
+
+    fractions = [
+        safe_divide(n, num_total)
+        for n in (
+            totals[JobStatus.HELD]
+            + totals[JobStatus.SUSPENDED]
+            + totals[JobStatus.REMOVED],
+            totals[JobStatus.IDLE],
+            totals[JobStatus.RUNNING],
+            totals[JobStatus.COMPLETED],
+        )
+    ]
+
+    bar_section_lengths = [int(width * f) for f in fractions]
+
+    # give any rounded-off space to the longest part of the bar
+    bar_section_lengths[argmax(bar_section_lengths)] += width - sum(bar_section_lengths)
+
+    bar = "[{}]".format(
+        "".join(
+            colorize(char * length, c) if color else char * length
+            for char, length, c in zip(
+                ("!", "-", "=", "#"),
+                bar_section_lengths,
+                (Color.RED, Color.BRIGHT_YELLOW, Color.CYAN, Color.GREEN),
+            )
+        )
     )
-    held_length = int(round(bar_length * totals[JobStatus.HELD] / float(totals[TOTAL])))
-    run_length = int(
-        round(bar_length * totals[JobStatus.RUNNING] / float(totals[TOTAL]))
-    )
-    idle_length = int(round(bar_length * totals[JobStatus.IDLE] / float(totals[TOTAL])))
 
-    completion_percent = round(
-        100.0 * totals[JobStatus.COMPLETED] / float(totals[TOTAL]), 1
-    )
-    held_percent = round(100.0 * totals[JobStatus.HELD] / float(totals[TOTAL]), 1)
-
-    complete_bar = "=" * complete_length
-    held_bar = "!" * held_length
-    run_bar = "-" * run_length
-    idle_bar = "-" * idle_length
-
-    if color:
-        complete_bar = colorize(complete_bar, Color.GREEN)
-        held_bar = colorize(held_bar, Color.RED)
-        run_bar = colorize(run_bar, Color.CYAN)
-        idle_bar = colorize(idle_bar, Color.BRIGHT_YELLOW)
-
-    bar = complete_bar + held_bar + run_bar + idle_bar
-    return "[{}] Completed: {}%, Held: {}%".format(
-        bar, completion_percent, held_percent
-    )
+    return [bar]
 
 
-def make_summary(totals):
-    return "Total: {} jobs; {} completed, {} removed, {} idle, {} running, {} held, {} suspended".format(
+def argmax(iter):
+    return max(enumerate(iter), key=lambda x: x[1])[0]
+
+
+SUMMARY_STATES = [
+    JobStatus.COMPLETED,
+    JobStatus.REMOVED,
+    JobStatus.IDLE,
+    JobStatus.RUNNING,
+    JobStatus.HELD,
+    JobStatus.SUSPENDED,
+]
+SUMMARY_MESSAGES = ["completed", "removed", "idle", "running", "held", "suspended"]
+
+
+def make_summary_with_totals(totals, width=None):
+    strip = 11
+
+    while True:
+        strip -= 1
+
+        summary = "Total: {} jobs; {}".format(
+            totals[TOTAL],
+            ", ".join(
+                "{} {}".format(totals[status], msg[:strip])
+                for status, msg in zip(SUMMARY_STATES, SUMMARY_MESSAGES)
+                if totals[status] > 0
+            ),
+        )
+
+        if width is None or len(summary) <= width or strip <= 2:
+            break
+
+    return [summary]
+
+
+def make_summary_with_percentages(totals, width=None):
+    num_total = totals[TOTAL]
+    percentages = [
+        round(100.0 * safe_divide(totals[s], num_total)) for s in SUMMARY_STATES
+    ]
+
+    summary = "Total: {} jobs; {}".format(
         totals[TOTAL],
-        totals[JobStatus.COMPLETED],
-        totals[JobStatus.REMOVED],
-        totals[JobStatus.IDLE],
-        totals[JobStatus.RUNNING],
-        totals[JobStatus.HELD],
-        totals[JobStatus.SUSPENDED],
+        ", ".join(
+            "{}% {}".format(p, msg) for p, msg in zip(percentages, SUMMARY_MESSAGES)
+        ),
     )
+
+    if width is not None and len(summary[0]) > width:
+        summary = "Total: {} jobs; {}".format(
+            totals[TOTAL],
+            ", ".join(
+                "{}% {}".format(p, msg[0].upper())
+                for p, msg in zip(percentages, SUMMARY_MESSAGES)
+            ),
+        )
+
+    return [summary]
+
+
+def safe_divide(numerator, denominator, default=0):
+    try:
+        return numerator / denominator
+    except ZeroDivisionError:
+        return default
 
 
 if __name__ == "__main__":
