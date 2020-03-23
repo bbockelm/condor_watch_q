@@ -85,6 +85,21 @@ def parse_args():
         "-batches", nargs="+", metavar="BATCH_NAME", help="Which batch names to track."
     )
 
+    parser.add_argument(
+        "-collector",
+        action="store",
+        nargs=1,
+        default=None,
+        help="Which collector to contact to find the schedd, if needed. Defaults to the local collector.",
+    )
+    parser.add_argument(
+        "-schedd",
+        action="store",
+        nargs=1,
+        default=None,
+        help="Which schedd to contact for queries, if needed. Defaults to the local schedd.",
+    )
+
     # select when (if) to exit
     parser.add_argument(
         "-exit",
@@ -231,6 +246,8 @@ def cli():
         cluster_ids=args.clusters,
         event_logs=args.files,
         batches=args.batches,
+        collector=args.collector,
+        schedd=args.schedd,
         exit_conditions=args.exit,
         group_by=args.groupby,
         progress_bar=args.progress,
@@ -273,6 +290,8 @@ def watch_q(
     cluster_ids=None,
     event_logs=None,
     batches=None,
+    collector=None,
+    schedd=None,
     exit_conditions=None,
     group_by="batch_name",
     progress_bar=True,
@@ -291,7 +310,7 @@ def watch_q(
     row_fmt = (lambda s, r: colorize(s, determine_row_color(r))) if color else None
 
     cluster_ids, event_logs, batch_names = find_job_event_logs(
-        users, cluster_ids, event_logs, batches
+        users, cluster_ids, event_logs, batches, collector=collector, schedd=schedd
     )
     if cluster_ids is not None and len(cluster_ids) == 0:
         print("No jobs found")
@@ -392,7 +411,9 @@ def watch_q(
 PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
 
 
-def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
+def find_job_event_logs(
+    users=None, cluster_ids=None, files=None, batches=None, collector=None, schedd=None
+):
     if users is None:
         users = []
     if cluster_ids is None:
@@ -410,7 +431,9 @@ def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
         )
     )
     if constraint != "":
-        ads = query(constraint=constraint, projection=PROJECTION)
+        ads = get_schedd(collector=collector, schedd=schedd).query(
+            constraint, PROJECTION
+        )
     else:
         ads = []
 
@@ -449,10 +472,15 @@ def find_job_event_logs(users=None, cluster_ids=None, files=None, batches=None):
     return cluster_ids, event_logs, batch_names
 
 
-def query(constraint, projection=None):
-    schedd = htcondor.Schedd()
-    ads = schedd.query(constraint, projection)
-    return ads
+def get_schedd(collector=None, schedd=None):
+    if collector is None and schedd is None:
+        schedd = htcondor.Schedd()
+    else:
+        coll = htcondor.Collector(collector)
+        schedd_ad = coll.locate(htcondor.DaemonTypes.Schedd, schedd)
+        schedd = htcondor.Schedd(schedd_ad)
+
+    return schedd
 
 
 class Cluster:
