@@ -300,7 +300,6 @@ ACTIVE_JOBS = "JOB_IDS"
 EVENT_LOG = "LOG"
 CLUSTER_ID = "CLUSTER"
 BATCH_NAME = "BATCH"
-MIN_JOB_ID = "MIN_JOB_ID"
 
 
 # attribute is the Python attribute name of the Cluster object
