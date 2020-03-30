@@ -205,7 +205,8 @@ def parse_args():
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
 
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    parse_unknown_args(unknown)
 
     args.groupby = {
         "log": "event_log_path",
@@ -214,6 +215,24 @@ def parse_args():
     }[args.groupby]
 
     return args
+
+
+def parse_unknown_args(unknown):
+    for unknown_arg in unknown:
+        print("Unknown command.", end=" ")
+        if unknown_arg.isdigit():
+            print("Did you mean -clusters {}?".format(unknown_arg))
+        elif unknown_arg == "-totals":
+            print("Did you mean -no-table?")
+        elif "-userlog" in unknown_arg:
+            print("Did you mean -files?")
+        elif "-" in unknown_arg:
+            print(
+                "Condor watch queue does not support the following functionality yet."
+            )
+        else:
+            print("Did you mean -users?")
+        exit()
 
 
 class ExitConditions(argparse.Action):
