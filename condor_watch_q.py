@@ -222,10 +222,12 @@ def parse_unknown_args(unknown):
         print("Unknown command.", end=" ")
         if unknown_arg.isdigit():
             print("Did you mean -clusters {}?".format(unknown_arg))
-        elif unknown_arg == "-totals":
+        elif "-totals" in unknown_arg:
             print("Did you mean -no-table?")
         elif "-userlog" in unknown_arg:
             print("Did you mean -files?")
+        elif "-nobatch" in unknown_arg:
+            print("Defaults to batch, try -groupby.")
         elif "-" in unknown_arg:
             print(
                 "Condor watch queue does not support the following functionality yet."
