@@ -37,7 +37,14 @@ import classad
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
+    class CustomParser(argparse.ArgumentParser):
+        def error(self, message):
+            args, unknown = parser.parse_known_args()
+            parse_unknown_args(unknown)
+            self.print_usage()
+            sys.exit(1)
+
+    parser = CustomParser(
         prog="condor_watch_q",
         description=textwrap.dedent(
             """
@@ -205,8 +212,7 @@ def parse_args():
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
 
-    args, unknown = parser.parse_known_args()
-    parse_unknown_args(unknown)
+    args = parser.parse_args()
 
     args.groupby = {
         "log": "event_log_path",
@@ -218,10 +224,11 @@ def parse_args():
 
 
 def parse_unknown_args(unknown):
+
     for unknown_arg in unknown:
         print("Unknown command.", end=" ")
         if unknown_arg.isdigit():
-            print("Did you mean condor_watch_q -clusters {}?".format(unknown_arg))
+            print("Did you mean condor_watch_q -clusters {} ?".format(unknown_arg))
         elif "-totals" in unknown_arg:
             print("Did you mean condor_watch_q -no-table?")
         elif "-userlog" in unknown_arg:
@@ -229,12 +236,9 @@ def parse_unknown_args(unknown):
         elif "-nobatch" in unknown_arg:
             print("Defaults to batch, try condor_watch_q -groupby {batch,log,cluster}.")
         elif "-" in unknown_arg:
-            print(
-                "condor_watch_q does not support the following functionality yet."
-            )
+            print("condor_watch_q does not support the following functionality yet.")
         else:
-            print("Did you mean -users?")
-        exit()
+            print("Did you mean -users {} ?".format(unknown_arg))
 
 
 class ExitConditions(argparse.Action):
