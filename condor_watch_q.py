@@ -312,12 +312,15 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
 
-def format_msg(msg):
-    terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
-    for row in range(len(msg)):
-        row_copy = msg[row]
-        msg[row] = row_copy[: int(terminal_columns)]
+# def format_msg(msg):
+#     terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
+#     for row in range(len(msg)):
+#         row_copy = msg[row]
+#         msg[row] = row_copy[: int(terminal_columns)]
 
+def resize_table(headers):
+    terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
+    
 
 def watch_q(
     users=None,
@@ -415,7 +418,8 @@ def watch_q(
             width = min(width, 79)
 
             msg = []
-
+            # del headers[-1]
+            resize_table(headers)
             if table:
                 msg += make_table(
                     headers=[key] + headers,
@@ -440,7 +444,7 @@ def watch_q(
             if updated_at:
                 msg += ["Updated at {}".format(now)] + [""]
 
-            format_msg(msg)
+            # format_msg(msg)
             # msg[:-1] because we need to strip the last blank section delimiter line off
             msg = "\n".join(msg[:-1])
 
