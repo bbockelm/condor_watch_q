@@ -36,14 +36,14 @@ import htcondor
 import classad
 
 
-def parse_args():
-    class CustomParser(argparse.ArgumentParser):
-        def error(self, message):
-            args, unknown = parser.parse_known_args()
-            parse_unknown_args(unknown)
-            self.print_usage()
-            sys.exit(1)
+class CustomParser(argparse.ArgumentParser):
+    def error(self, message):
+        args, unknown = self.parse_known_args()
+        parse_unknown_args(unknown)
+        super(CustomParser, self).error(message)
 
+
+def parse_args():
     parser = CustomParser(
         prog="condor_watch_q",
         description=textwrap.dedent(
@@ -224,21 +224,24 @@ def parse_args():
 
 
 def parse_unknown_args(unknown):
-
+    err_message = "Unknown command. "
     for unknown_arg in unknown:
-        print("Unknown command.", end=" ")
         if unknown_arg.isdigit():
-            print("Did you mean condor_watch_q -clusters {} ?".format(unknown_arg))
+            err_message += "Did you mean condor_watch_q -clusters {} ? ".format(
+                unknown_arg
+            )
         elif "-totals" in unknown_arg:
-            print("Did you mean condor_watch_q -no-table?")
+            err_message += "Did you mean condor_watch_q -no-table? "
         elif "-userlog" in unknown_arg:
-            print("Did you mean condor_watch_q -files FILE [FILE ...]?")
+            err_message += "Did you mean condor_watch_q -files FILE [FILE ...]? "
         elif "-nobatch" in unknown_arg:
-            print("Defaults to batch, try condor_watch_q -groupby {batch,log,cluster}.")
-        elif "-" in unknown_arg:
-            print("condor_watch_q does not support the following functionality yet.")
+            err_message += "To group by something other than batch name, try condor_watch_q -groupby {batch,log,cluster}. "
+        elif unknown_arg[0] == "-":
+            err_message += "Did you mean -users {} ? ".format(unknown_arg)
         else:
-            print("Did you mean -users {} ?".format(unknown_arg))
+            err_message += unknown_arg + " "
+
+    print(err_message, file=sys.stderr)
 
 
 class ExitConditions(argparse.Action):
