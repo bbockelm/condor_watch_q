@@ -236,7 +236,7 @@ def parse_unknown_args(unknown):
             err_message += "Did you mean condor_watch_q -files FILE [FILE ...]? "
         elif "-nobatch" in unknown_arg:
             err_message += "To group by something other than batch name, try condor_watch_q -groupby {batch,log,cluster}. "
-        elif unknown_arg[0] == "-":
+        elif unknown_arg[0] != "-":
             err_message += "Did you mean -users {} ? ".format(unknown_arg)
         else:
             err_message += unknown_arg + " "
