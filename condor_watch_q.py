@@ -36,15 +36,8 @@ import htcondor
 import classad
 
 
-class CustomParser(argparse.ArgumentParser):
-    def error(self, message):
-        args, unknown = self.parse_known_args()
-        parse_unknown_args(unknown)
-        super(CustomParser, self).error(message)
-
-
 def parse_args():
-    parser = CustomParser(
+    parser = argparse.ArgumentParser(
         prog="condor_watch_q",
         description=textwrap.dedent(
             """
@@ -212,7 +205,11 @@ def parse_args():
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
 
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+
+    if len(unknown) != 0:
+        parser.print_usage()
+        parse_unknown_args(unknown)
 
     args.groupby = {
         "log": "event_log_path",
@@ -223,25 +220,29 @@ def parse_args():
     return args
 
 
-def parse_unknown_args(unknown):
-    err_message = "Unknown command. "
-    for unknown_arg in unknown:
-        if unknown_arg.isdigit():
-            err_message += "Did you mean condor_watch_q -clusters {} ?".format(
-                unknown_arg
+def parse_unknown_args(unknown_args):
+    err_message = "condor_watch_q: error:\n"
+    idx = 0
+    while idx < len(unknown_args):
+        if unknown_args[idx].isdigit():
+            err_message += "Did you mean condor_watch_q -clusters {} ?\n".format(
+                unknown_args[idx]
             )
-        elif "-totals" in unknown_arg:
-            err_message += "Did you mean condor_watch_q -no-table ?"
-        elif "-userlog" in unknown_arg:
-            err_message += "Did you mean condor_watch_q -files FILE [FILE ...] ?"
-        elif "-nobatch" in unknown_arg:
-            err_message += "To group by something other than batch name, try condor_watch_q -groupby {batch,log,cluster} ."
-        elif unknown_arg[0] != "-":
-            err_message += "Did you mean -users {} ?".format(unknown_arg)
+        elif "-totals" in unknown_args[idx]:
+            err_message += "Did you mean condor_watch_q -no-table ?\n"
+        elif "-userlog" in unknown_args[idx]:
+            while idx + 1 < len(unknown_args) and "-" not in unknown_args[idx + 1]:
+                idx += 1
+            err_message += "Did you mean condor_watch_q -files FILE [FILE ...] ?\n"
+        elif "-nobatch" in unknown_args[idx]:
+            err_message += "To group by something other than batch name, try condor_watch_q -groupby {batch,log,cluster} .\n"
+        elif unknown_args[idx][0] != "-":
+            err_message += "Did you mean -users {} ?\n".format(unknown_args[idx])
         else:
-            err_message += unknown_arg
-
-    print(err_message, file=sys.stderr)
+            err_message += "Unknown command: {}\n".format(unknown_args[idx])
+        idx += 1
+    print(err_message[:-1], file=sys.stderr)
+    sys.exit(1)
 
 
 class ExitConditions(argparse.Action):
