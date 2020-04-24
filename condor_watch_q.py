@@ -311,13 +311,13 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 }
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
-
-def format_msg(msg,terminal_columns):
+# format and reset color for colored lines remove coloring if implement color columns
+def format_msg(msg, terminal_columns):
     for row in range(len(msg)):
-        if "\033" in msg[row][-1]:
-            color_code = msg[row][-1]
-        row_copy = msg[row]
-        msg[row] = row_copy[: int(terminal_columns)]
+        if Color.RESET in msg[row]:
+            msg[row] = msg[row][: int(terminal_columns)] + Color.RESET
+        else:
+            msg[row] = msg[row][: int(terminal_columns)]
 
 def watch_q(
     users=None,
@@ -414,6 +414,9 @@ def watch_q(
                 width = 79
             width = min(width, 79)
 
+            terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
+            terminal_columns = int(terminal_columns)
+            
             msg = []
             # del headers[-1]
 
@@ -426,23 +429,23 @@ def watch_q(
                     fill="-",
                 )
                 msg += [""]
-
+            
             if progress_bar:
-                msg += make_progress_bar(totals=totals, width=width, color=color)
+                msg += make_progress_bar(totals=totals, width=terminal_columns, color=color)
                 msg += [""]
 
             if summary:
                 if summary_type == "totals":
-                    msg += make_summary_with_totals(totals, width=width)
+                    msg += make_summary_with_totals(totals, width=terminal_columns)
                 elif summary_type == "percentages":
-                    msg += make_summary_with_percentages(totals, width=width)
+                    msg += make_summary_with_percentages(totals, width=terminal_columns)
                 msg += [""]
 
             if updated_at:
                 msg += ["Updated at {}".format(now)] + [""]
 
-            terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
-            format_msg(msg,terminal_columns)
+            
+            format_msg(msg, terminal_columns)
 
             # msg[:-1] because we need to strip the last blank section delimiter line off
             msg = "\n".join(msg[:-1])
