@@ -205,6 +205,11 @@ def parse_args():
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
 
+    args, unknown = parser.parse_known_args()
+
+    if len(unknown) != 0:
+        check_unknown_args_for_known_errors(parser, unknown)
+
     args = parser.parse_args()
 
     args.groupby = {
@@ -214,6 +219,66 @@ def parse_args():
     }[args.groupby]
 
     return args
+
+
+def check_unknown_args_for_known_errors(parser, unknown_args):
+    unknown_args = iter(unknown_args)
+    for arg in unknown_args:
+        error_message = _check_unknown_arg(arg, unknown_args)
+        if error_message is None:
+            continue
+
+        parser.print_usage()
+        print(
+            "{}: error: argument {}: {}".format(parser.prog, arg, error_message),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _check_unknown_arg(arg, unknown_args):
+    if arg.isdigit():
+        cluster_ids = [arg]
+        for next_arg in unknown_args:
+            if next_arg.startswith("-"):
+                break
+            if not next_arg.isdigit():
+                continue
+            cluster_ids.append(next_arg)
+
+        return "to track specific cluster IDs, try -clusters {}".format(
+            " ".join(cluster_ids)
+        )
+
+    elif "-totals" in arg:
+        return "to only print totals, try -no-table"
+
+    elif "-userlog" in arg:
+        files = []
+        for next_arg in unknown_args:
+            if next_arg.startswith("-"):
+                break
+            files.append(next_arg)
+
+        return "to track jobs from specific event logs, try -files {}".format(
+            " ".join(files)
+        )
+
+    elif "-nobatch" in arg:
+        return "to group by something other than batch name, try -groupby {{batch,log,cluster}}"
+
+    elif not arg.startswith("-"):
+        users = [arg]
+        for next_arg in unknown_args:
+            if next_arg.startswith("-"):
+                break
+            if next_arg.isdigit():
+                continue
+            users.append(next_arg)
+
+        return "to track jobs from specific users, try -users {}".format(
+            " ".join(users)
+        )
 
 
 class ExitConditions(argparse.Action):
