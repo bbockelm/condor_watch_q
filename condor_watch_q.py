@@ -312,12 +312,14 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
 # format and reset color for colored lines remove coloring if implement color columns
-def format_msg(msg, terminal_columns):
+def format_table(msg, terminal_columns):
+    terminal_columns -= len(Color.RESET)
     for row in range(len(msg)):
         if Color.RESET in msg[row]:
             msg[row] = msg[row][: int(terminal_columns)] + Color.RESET
         else:
             msg[row] = msg[row][: int(terminal_columns)]
+
 
 def watch_q(
     users=None,
@@ -408,15 +410,6 @@ def watch_q(
                 ),
             )
 
-            try:
-                width = shutil.get_terminal_size((80, 20)).columns - 1
-            except AttributeError:  # Python 2 is missing shutil.get_terminal_size
-                width = 79
-            width = min(width, 79)
-
-            terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
-            terminal_columns = int(terminal_columns)
-            
             msg = []
             # del headers[-1]
 
@@ -429,9 +422,14 @@ def watch_q(
                     fill="-",
                 )
                 msg += [""]
-            
+            terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
+            terminal_columns = int(terminal_columns)
+            format_table(msg, terminal_columns)
+
             if progress_bar:
-                msg += make_progress_bar(totals=totals, width=terminal_columns, color=color)
+                msg += make_progress_bar(
+                    totals=totals, width=terminal_columns, color=color
+                )
                 msg += [""]
 
             if summary:
@@ -443,9 +441,6 @@ def watch_q(
 
             if updated_at:
                 msg += ["Updated at {}".format(now)] + [""]
-
-            
-            format_msg(msg, terminal_columns)
 
             # msg[:-1] because we need to strip the last blank section delimiter line off
             msg = "\n".join(msg[:-1])
@@ -929,9 +924,9 @@ def strip_ansi(string):
 
 
 def make_progress_bar(totals, width=None, color=True):
-    width = width or 79
-    width -= 2  # account for the wrapping [ ]
-
+    width = min(width, 79)
+    # Each color block is length 5, there are 8 of them: 40
+    width -= 42  # account for the wrapping [ ] and color coding ask josh
     num_total = float(totals[TOTAL])
 
     fractions = [
@@ -947,10 +942,8 @@ def make_progress_bar(totals, width=None, color=True):
     ]
 
     bar_section_lengths = [int(width * f) for f in fractions]
-
     # give any rounded-off space to the longest part of the bar
     bar_section_lengths[argmax(bar_section_lengths)] += width - sum(bar_section_lengths)
-
     bar = "[{}]".format(
         "".join(
             colorize(char * length, c) if color else char * length
@@ -961,7 +954,6 @@ def make_progress_bar(totals, width=None, color=True):
             )
         )
     )
-
     return [bar]
 
 
