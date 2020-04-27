@@ -208,8 +208,9 @@ def parse_args():
     args, unknown = parser.parse_known_args()
 
     if len(unknown) != 0:
-        parser.print_usage()
-        parse_unknown_args(unknown)
+        check_unknown_args_for_known_errors(parser, unknown)
+
+    args = parser.parse_args()
 
     args.groupby = {
         "log": "event_log_path",
@@ -220,29 +221,64 @@ def parse_args():
     return args
 
 
-def parse_unknown_args(unknown_args):
-    err_message = "condor_watch_q: error:\n"
-    idx = 0
-    while idx < len(unknown_args):
-        if unknown_args[idx].isdigit():
-            err_message += "Did you mean condor_watch_q -clusters {} ?\n".format(
-                unknown_args[idx]
-            )
-        elif "-totals" in unknown_args[idx]:
-            err_message += "Did you mean condor_watch_q -no-table ?\n"
-        elif "-userlog" in unknown_args[idx]:
-            while idx + 1 < len(unknown_args) and "-" not in unknown_args[idx + 1]:
-                idx += 1
-            err_message += "Did you mean condor_watch_q -files FILE [FILE ...] ?\n"
-        elif "-nobatch" in unknown_args[idx]:
-            err_message += "To group by something other than batch name, try condor_watch_q -groupby {batch,log,cluster} .\n"
-        elif unknown_args[idx][0] != "-":
-            err_message += "Did you mean -users {} ?\n".format(unknown_args[idx])
-        else:
-            err_message += "Unknown command: {}\n".format(unknown_args[idx])
-        idx += 1
-    print(err_message[:-1], file=sys.stderr)
-    sys.exit(1)
+def check_unknown_args_for_known_errors(parser, unknown_args):
+    unknown_args = iter(unknown_args)
+    for arg in unknown_args:
+        error_message = _check_unknown_arg(arg, unknown_args)
+        if error_message is None:
+            continue
+
+        parser.print_usage()
+        print(
+            "{}: error: argument {}: {}".format(parser.prog, arg, error_message),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _check_unknown_arg(arg, unknown_args):
+    if arg.isdigit():
+        cluster_ids = [arg]
+        for next_arg in unknown_args:
+            if next_arg.startswith("-"):
+                break
+            if not next_arg.isdigit():
+                continue
+            cluster_ids.append(next_arg)
+
+        return "to track specific cluster IDs, try -clusters {}".format(
+            " ".join(cluster_ids)
+        )
+
+    elif "-totals" in arg:
+        return "to only print totals, try -no-table"
+
+    elif "-userlog" in arg:
+        files = []
+        for next_arg in unknown_args:
+            if next_arg.startswith("-"):
+                break
+            files.append(next_arg)
+
+        return "to track jobs from specific event logs, try -files {} ?".format(
+            " ".join(files)
+        )
+
+    elif "-nobatch" in arg:
+        return "to group by something other than batch name, try -groupby {{batch,log,cluster}}"
+
+    elif not arg.startswith("-"):
+        users = [arg]
+        for next_arg in unknown_args:
+            if next_arg.startswith("-"):
+                break
+            if next_arg.isdigit():
+                continue
+            users.append(next_arg)
+
+        return "to track jobs from specific users, try -users {} ?".format(
+            " ".join(users)
+        )
 
 
 class ExitConditions(argparse.Action):
