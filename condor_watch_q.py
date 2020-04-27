@@ -260,7 +260,7 @@ def _check_unknown_arg(arg, unknown_args):
                 break
             files.append(next_arg)
 
-        return "to track jobs from specific event logs, try -files {} ?".format(
+        return "to track jobs from specific event logs, try -files {}".format(
             " ".join(files)
         )
 
@@ -276,7 +276,7 @@ def _check_unknown_arg(arg, unknown_args):
                 continue
             users.append(next_arg)
 
-        return "to track jobs from specific users, try -users {} ?".format(
+        return "to track jobs from specific users, try -users {}".format(
             " ".join(users)
         )
 
