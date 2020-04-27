@@ -372,6 +372,7 @@ def watch_q(
                 processing_messages = tracker.process_events()
 
             if msg is not None and refresh:
+                msg = strip_ansi(msg)
                 prev_lines = list(msg.splitlines())
                 prev_len_lines = [len(line) for line in prev_lines]
 
@@ -926,7 +927,8 @@ def strip_ansi(string):
 def make_progress_bar(totals, width=None, color=True):
     width = min(width, 79)
     # Each color block is length 5, there are 8 of them: 40
-    width -= 42  # account for the wrapping [ ] and color coding ask josh
+    # 
+    width -= 2  # account for the wrapping [ ] and color coding ask josh
     num_total = float(totals[TOTAL])
 
     fractions = [
