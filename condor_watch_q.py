@@ -376,15 +376,6 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 }
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
-# format and reset color for colored lines remove coloring if implement color columns
-def format_table(msg, terminal_columns):
-    terminal_columns -= len(Color.RESET)
-    for row in range(len(msg)):
-        if Color.RESET in msg[row]:
-            msg[row] = msg[row][: int(terminal_columns)] + Color.RESET
-        else:
-            msg[row] = msg[row][: int(terminal_columns)]
-
 
 def watch_q(
     users=None,
@@ -488,9 +479,12 @@ def watch_q(
                     fill="-",
                 )
                 msg += [""]
+
             terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
             terminal_columns = int(terminal_columns)
-            format_table(msg, terminal_columns)
+
+            for row in range(len(msg)):
+                msg[row] = msg[row][:terminal_columns]
 
             if progress_bar:
                 msg += make_progress_bar(
@@ -990,10 +984,7 @@ def strip_ansi(string):
 
 
 def make_progress_bar(totals, width=None, color=True):
-    width = min(width, 79)
-    # Each color block is length 5, there are 8 of them: 40
-    # 
-    width -= 2  # account for the wrapping [ ] and color coding ask josh
+    width = min(width, 79) - 2  # account for the wrapping [ ]
     num_total = float(totals[TOTAL])
 
     fractions = [
