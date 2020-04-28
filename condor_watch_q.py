@@ -216,7 +216,10 @@ def parse_args():
     if len(unknown) != 0:
         check_unknown_args_for_known_errors(parser, unknown)
 
-    args = parser.parse_args()
+        # because we're in this branch, this will fail, printing out the
+        # original errors argparse would have printed for the unknown args
+        # if we didn't catch them ourselves
+        args = parser.parse_args()
 
     args.groupby = {
         "log": "event_log_path",
