@@ -377,6 +377,12 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
 
+def get_linux_console_width():
+    # open 'stty size' command as file, then read window size
+    terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
+    return int(terminal_columns)
+
+
 def watch_q(
     users=None,
     cluster_ids=None,
@@ -468,7 +474,6 @@ def watch_q(
             )
 
             msg = []
-            # del headers[-1]
 
             if table:
                 msg += make_table(
@@ -480,8 +485,7 @@ def watch_q(
                 )
                 msg += [""]
 
-            terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
-            terminal_columns = int(terminal_columns)
+            terminal_columns = get_linux_console_width()
 
             for row in range(len(msg)):
                 msg[row] = msg[row][:terminal_columns]
