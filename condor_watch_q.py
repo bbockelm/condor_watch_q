@@ -35,6 +35,8 @@ import contextlib
 import htcondor
 import classad
 
+VERSION = "2020.04.28"
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -60,7 +62,11 @@ def parse_args():
             job is held (with exit code 1), run
 
                 condor_watch_q -exit all,done,0 -exit any,held,1
-            """
+                
+            Version {}
+            """.format(
+                VERSION
+            )
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
