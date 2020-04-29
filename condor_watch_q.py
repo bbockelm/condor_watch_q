@@ -378,7 +378,6 @@ GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.item
 
 
 def get_linux_console_width():
-    # open 'stty size' command as file, then read window size
     terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
     return int(terminal_columns)
 
@@ -487,6 +486,7 @@ def watch_q(
 
             terminal_columns = get_linux_console_width()
 
+            # Iterate through every row in table, truncate to console width
             for row in range(len(msg)):
                 msg[row] = msg[row][:terminal_columns]
 
