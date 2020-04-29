@@ -386,6 +386,11 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
 
+def get_linux_console_width():
+    terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
+    return int(terminal_columns)
+
+
 def watch_q(
     users=None,
     cluster_ids=None,
@@ -437,6 +442,7 @@ def watch_q(
                 processing_messages = tracker.process_events()
 
             if msg is not None and refresh:
+                msg = strip_ansi(msg)
                 prev_lines = list(msg.splitlines())
                 prev_len_lines = [len(line) for line in prev_lines]
 
@@ -475,12 +481,6 @@ def watch_q(
                 ),
             )
 
-            try:
-                width = shutil.get_terminal_size((80, 20)).columns - 1
-            except AttributeError:  # Python 2 is missing shutil.get_terminal_size
-                width = 79
-            width = min(width, 79)
-
             msg = []
 
             if table:
@@ -493,15 +493,23 @@ def watch_q(
                 )
                 msg += [""]
 
+            terminal_columns = get_linux_console_width()
+
+            # Iterate through every row in table, truncate to console width
+            for row in range(len(msg)):
+                msg[row] = msg[row][:terminal_columns]
+
             if progress_bar:
-                msg += make_progress_bar(totals=totals, width=width, color=color)
+                msg += make_progress_bar(
+                    totals=totals, width=terminal_columns, color=color
+                )
                 msg += [""]
 
             if summary:
                 if summary_type == "totals":
-                    msg += make_summary_with_totals(totals, width=width)
+                    msg += make_summary_with_totals(totals, width=terminal_columns)
                 elif summary_type == "percentages":
-                    msg += make_summary_with_percentages(totals, width=width)
+                    msg += make_summary_with_percentages(totals, width=terminal_columns)
                 msg += [""]
 
             if updated_at:
@@ -989,9 +997,7 @@ def strip_ansi(string):
 
 
 def make_progress_bar(totals, width=None, color=True):
-    width = width or 79
-    width -= 2  # account for the wrapping [ ]
-
+    width = min(width, 79) - 2  # account for the wrapping [ ]
     num_total = float(totals[TOTAL])
 
     fractions = [
@@ -1007,10 +1013,8 @@ def make_progress_bar(totals, width=None, color=True):
     ]
 
     bar_section_lengths = [int(width * f) for f in fractions]
-
     # give any rounded-off space to the longest part of the bar
     bar_section_lengths[argmax(bar_section_lengths)] += width - sum(bar_section_lengths)
-
     bar = "[{}]".format(
         "".join(
             colorize(char * length, c) if color else char * length
@@ -1021,7 +1025,6 @@ def make_progress_bar(totals, width=None, color=True):
             )
         )
     )
-
     return [bar]
 
 
