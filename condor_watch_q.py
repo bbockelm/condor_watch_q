@@ -35,7 +35,7 @@ import contextlib
 import htcondor
 import classad
 
-VERSION = "2020.04.28"
+VERSION = "2020.04.29"
 
 
 def parse_args():
