@@ -436,6 +436,8 @@ def watch_q(
 
     try:
         msg = None
+        move = ""
+        clear = ""
 
         while True:
             with display_temporary_message("Reading new events...", enabled=refresh):
@@ -448,8 +450,6 @@ def watch_q(
 
                 move = "\033[{}A\r".format(len(prev_len_lines))
                 clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
-                sys.stdout.write(move + clear + move)
-                sys.stdout.flush()
 
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -521,6 +521,8 @@ def watch_q(
             if not refresh:
                 msg += "\n..."
 
+            sys.stdout.write(move + clear + move)
+            sys.stdout.flush()
             print(msg)
 
             for grouper, checker, exit_code, disp in exit_checks:
