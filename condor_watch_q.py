@@ -435,9 +435,7 @@ def watch_q(
         exit_checks.append((exit_grouper, exit_check, exit_code, disp))
 
     try:
-        msg = None
-        move = ""
-        clear = ""
+        msg, move, clear = None, None, None
 
         while True:
             with display_temporary_message("Reading new events...", enabled=refresh):
@@ -447,17 +445,10 @@ def watch_q(
                 msg = strip_ansi(msg)
                 prev_lines = list(msg.splitlines())
                 prev_len_lines = [len(line) for line in prev_lines]
-
                 move = "\033[{}A\r".format(len(prev_len_lines))
                 clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
 
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            if len(processing_messages) > 0:
-                print(
-                    "\n".join("{} | {}".format(now, m) for m in processing_messages),
-                    file=sys.stderr,
-                )
 
             groups_by_key = group_clusters_by_key(tracker.clusters, key)
             rows_by_key, totals = make_rows_from_groups(groups_by_key, key)
@@ -521,8 +512,16 @@ def watch_q(
             if not refresh:
                 msg += "\n..."
 
-            sys.stdout.write(move + clear + move)
-            sys.stdout.flush()
+            if clear and move:
+                sys.stdout.write(move + clear + move)
+                sys.stdout.flush()
+
+            if len(processing_messages) > 0:
+                print(
+                    "\n".join("{} | {}".format(now, m) for m in processing_messages),
+                    file=sys.stderr,
+                )
+
             print(msg)
 
             for grouper, checker, exit_code, disp in exit_checks:
