@@ -1003,15 +1003,16 @@ def make_progress_bar(totals, width=None, color=True):
     fractions = [
         safe_divide(n, num_total)
         for n in (
+            totals[JobStatus.COMPLETED],
+            totals[JobStatus.RUNNING],
+            totals[JobStatus.IDLE],
             totals[JobStatus.HELD]
             + totals[JobStatus.SUSPENDED]
             + totals[JobStatus.REMOVED],
-            totals[JobStatus.IDLE],
-            totals[JobStatus.RUNNING],
-            totals[JobStatus.COMPLETED],
         )
     ]
-
+    # ("#", "=", "-", "!")
+    # (Color.GREEN, Color.CYAN, Color.BRIGHT_YELLOW, Color.RED)
     bar_section_lengths = [int(width * f) for f in fractions]
     # give any rounded-off space to the longest part of the bar
     bar_section_lengths[argmax(bar_section_lengths)] += width - sum(bar_section_lengths)
@@ -1019,9 +1020,9 @@ def make_progress_bar(totals, width=None, color=True):
         "".join(
             colorize(char * length, c) if color else char * length
             for char, length, c in zip(
-                ("!", "-", "=", "#"),
+                ("#", "=", "-", "!"),
                 bar_section_lengths,
-                (Color.RED, Color.BRIGHT_YELLOW, Color.CYAN, Color.GREEN),
+                (Color.GREEN, Color.CYAN, Color.BRIGHT_YELLOW, Color.RED),
             )
         )
     )
