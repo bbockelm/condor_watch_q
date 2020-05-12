@@ -1011,8 +1011,7 @@ def make_progress_bar(totals, width=None, color=True):
             + totals[JobStatus.REMOVED],
         )
     ]
-    # ("#", "=", "-", "!")
-    # (Color.GREEN, Color.CYAN, Color.BRIGHT_YELLOW, Color.RED)
+
     bar_section_lengths = [int(width * f) for f in fractions]
     # give any rounded-off space to the longest part of the bar
     bar_section_lengths[argmax(bar_section_lengths)] += width - sum(bar_section_lengths)
