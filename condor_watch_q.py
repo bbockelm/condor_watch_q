@@ -435,91 +435,94 @@ def watch_q(
         exit_checks.append((exit_grouper, exit_check, exit_code, disp))
 
     try:
-        msg = None
+        msg, move, clear = None, None, None
 
         while True:
-            with display_temporary_message("Reading new events...", enabled=refresh):
+            with display_temporary_message("Processing new events...", enabled=refresh):
                 processing_messages = tracker.process_events()
 
-            if msg is not None and refresh:
-                msg = strip_ansi(msg)
-                prev_lines = list(msg.splitlines())
-                prev_len_lines = [len(line) for line in prev_lines]
+                if msg is not None and refresh:
+                    msg = strip_ansi(msg)
+                    prev_lines = list(msg.splitlines())
+                    prev_len_lines = [len(line) for line in prev_lines]
+                    move = "\033[{}A\r".format(len(prev_len_lines))
+                    clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
 
-                move = "\033[{}A\r".format(len(prev_len_lines))
-                clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
+                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                groups_by_key = group_clusters_by_key(tracker.clusters, key)
+                rows_by_key, totals = make_rows_from_groups(groups_by_key, key)
+
+                headers, rows_by_key = strip_empty_columns(rows_by_key)
+
+                # strip out 0 values
+                rows_by_key = {
+                    key: {k: v for k, v in row.items() if v != 0}
+                    for key, row in rows_by_key.items()
+                }
+
+                if key == EVENT_LOG and abbreviate_path_components:
+                    for row in rows_by_key.values():
+                        row[key] = abbreviate_path(row[key])
+
+                rows_by_key = sorted(
+                    rows_by_key.items(),
+                    key=lambda key_row: min(
+                        cluster.cluster_id for cluster in groups_by_key[key_row[0]]
+                    ),
+                )
+
+                msg = []
+
+                if table:
+                    msg += make_table(
+                        headers=[key] + headers,
+                        rows=[row for _, row in rows_by_key],
+                        row_fmt=row_fmt,
+                        alignment=TABLE_ALIGNMENT,
+                        fill="-",
+                    )
+                    msg += [""]
+
+                terminal_columns = get_linux_console_width()
+
+                # Iterate through every row in table, truncate to console width
+                for row in range(len(msg)):
+                    msg[row] = msg[row][:terminal_columns]
+
+                if progress_bar:
+                    msg += make_progress_bar(
+                        totals=totals, width=terminal_columns, color=color
+                    )
+                    msg += [""]
+
+                if summary:
+                    if summary_type == "totals":
+                        msg += make_summary_with_totals(totals, width=terminal_columns)
+                    elif summary_type == "percentages":
+                        msg += make_summary_with_percentages(
+                            totals, width=terminal_columns
+                        )
+                    msg += [""]
+
+                if updated_at:
+                    msg += ["Updated at {}".format(now)] + [""]
+
+                # msg[:-1] because we need to strip the last blank section delimiter line off
+                msg = "\n".join(msg[:-1])
+
+                if not refresh:
+                    msg += "\n..."
+
+            if clear and move:
                 sys.stdout.write(move + clear + move)
                 sys.stdout.flush()
-
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             if len(processing_messages) > 0:
                 print(
                     "\n".join("{} | {}".format(now, m) for m in processing_messages),
                     file=sys.stderr,
                 )
-
-            groups_by_key = group_clusters_by_key(tracker.clusters, key)
-            rows_by_key, totals = make_rows_from_groups(groups_by_key, key)
-
-            headers, rows_by_key = strip_empty_columns(rows_by_key)
-
-            # strip out 0 values
-            rows_by_key = {
-                key: {k: v for k, v in row.items() if v != 0}
-                for key, row in rows_by_key.items()
-            }
-
-            if key == EVENT_LOG and abbreviate_path_components:
-                for row in rows_by_key.values():
-                    row[key] = abbreviate_path(row[key])
-
-            rows_by_key = sorted(
-                rows_by_key.items(),
-                key=lambda key_row: min(
-                    cluster.cluster_id for cluster in groups_by_key[key_row[0]]
-                ),
-            )
-
-            msg = []
-
-            if table:
-                msg += make_table(
-                    headers=[key] + headers,
-                    rows=[row for _, row in rows_by_key],
-                    row_fmt=row_fmt,
-                    alignment=TABLE_ALIGNMENT,
-                    fill="-",
-                )
-                msg += [""]
-
-            terminal_columns = get_linux_console_width()
-
-            # Iterate through every row in table, truncate to console width
-            for row in range(len(msg)):
-                msg[row] = msg[row][:terminal_columns]
-
-            if progress_bar:
-                msg += make_progress_bar(
-                    totals=totals, width=terminal_columns, color=color
-                )
-                msg += [""]
-
-            if summary:
-                if summary_type == "totals":
-                    msg += make_summary_with_totals(totals, width=terminal_columns)
-                elif summary_type == "percentages":
-                    msg += make_summary_with_percentages(totals, width=terminal_columns)
-                msg += [""]
-
-            if updated_at:
-                msg += ["Updated at {}".format(now)] + [""]
-
-            # msg[:-1] because we need to strip the last blank section delimiter line off
-            msg = "\n".join(msg[:-1])
-
-            if not refresh:
-                msg += "\n..."
 
             print(msg)
 
