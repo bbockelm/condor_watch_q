@@ -1000,31 +1000,51 @@ def make_progress_bar(totals, width=None, color=True):
     width = min(width, 79) - 2  # account for the wrapping [ ]
     num_total = float(totals[TOTAL])
 
+    PROGRESS_BAR_CHARS_AND_COLORS = {
+        JobStatus.COMPLETED: (Color.GREEN, "#"),
+        JobStatus.RUNNING: (Color.CYAN, "="),
+        JobStatus.IDLE: (Color.BRIGHT_YELLOW, "-"),
+        JobStatus.HELD: (Color.RED, "!"),
+        JobStatus.SUSPENDED: (Color.RED, "!"),
+        JobStatus.REMOVED: (Color.RED, "!"),
+    }
+    PROGRESS_BAR_ORDER = (
+        JobStatus.COMPLETED,
+        JobStatus.RUNNING,
+        JobStatus.IDLE,
+        JobStatus.HELD,
+        JobStatus.SUSPENDED,
+        JobStatus.REMOVED,
+    )
+
     fractions = [
         safe_divide(n, num_total)
         for n in (
             totals[JobStatus.COMPLETED],
             totals[JobStatus.RUNNING],
             totals[JobStatus.IDLE],
-            totals[JobStatus.HELD]
-            + totals[JobStatus.SUSPENDED]
-            + totals[JobStatus.REMOVED],
+            totals[JobStatus.HELD],
+            totals[JobStatus.SUSPENDED],
+            totals[JobStatus.REMOVED],
         )
     ]
 
     bar_section_lengths = [int(width * f) for f in fractions]
     # give any rounded-off space to the longest part of the bar
     bar_section_lengths[argmax(bar_section_lengths)] += width - sum(bar_section_lengths)
+    # generate bar
     bar = "[{}]".format(
         "".join(
-            colorize(char * length, c) if color else char * length
-            for char, length, c in zip(
-                ("#", "=", "-", "!"),
-                bar_section_lengths,
-                (Color.GREEN, Color.CYAN, Color.BRIGHT_YELLOW, Color.RED),
+            colorize(
+                PROGRESS_BAR_CHARS_AND_COLORS[status][1] * length,
+                PROGRESS_BAR_CHARS_AND_COLORS[status][0],
             )
+            if color
+            else PROGRESS_BAR_CHARS_AND_COLORS[status][1] * length
+            for status, length in zip(PROGRESS_BAR_ORDER, bar_section_lengths)
         )
     )
+
     return [bar]
 
 
