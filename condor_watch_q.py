@@ -28,14 +28,13 @@ import datetime
 import os
 import time
 import operator
-import shutil
 import re
 import contextlib
 
 import htcondor
 import classad
 
-VERSION = "2020.04.29"
+VERSION = "2020.05.18"
 
 
 def parse_args():
