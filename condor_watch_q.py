@@ -420,7 +420,7 @@ def watch_q(
     cluster_ids, event_logs, batch_names = find_job_event_logs(
         users, cluster_ids, event_logs, batches, collector=collector, schedd=schedd
     )
-    if cluster_ids is not None and len(cluster_ids) == 0:
+    if len(event_logs) == 0:
         print("No jobs found")
         sys.exit(0)
 
