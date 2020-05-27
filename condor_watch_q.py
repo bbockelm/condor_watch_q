@@ -473,8 +473,12 @@ def watch_q(
 
                 msg = []
 
+                terminal_columns = get_linux_console_width()
+
+                # print(row_progress_bars)
                 if table:
                     msg += make_table(
+                        terminal_columns=terminal_columns,
                         headers=[key] + headers,
                         rows=[row for _, row in rows_by_key],
                         row_fmt=row_fmt,
@@ -482,9 +486,6 @@ def watch_q(
                         fill="-",
                     )
                     msg += [""]
-
-                terminal_columns = get_linux_console_width()
-
                 # Iterate through every row in table, truncate to console width
                 for row in range(len(msg)):
                     msg[row] = msg[row][:terminal_columns]
@@ -952,7 +953,16 @@ JOB_EVENT_STATUS_TRANSITIONS = {
 }
 
 
-def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None):
+def make_table(
+    terminal_columns,
+    headers,
+    rows,
+    fill="",
+    header_fmt=None,
+    row_fmt=None,
+    alignment=None,
+    color=True,
+):
     if header_fmt is None:
         header_fmt = lambda _: _
     if row_fmt is None:
@@ -962,14 +972,19 @@ def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=
 
     headers = tuple(headers)
     lengths = [len(str(h)) for h in headers]
-
     align_methods = [alignment.get(h, "center") for h in headers]
     processed_rows = []
-    for row in rows:
-        processed_rows.append([str(row.get(key, fill)) for key in headers])
+    row_progress_bars = []
 
+    for row in rows:
+        processed_rows.append([str(row.get(key, fill)) + " " for key in headers])
     for row in processed_rows:
         lengths = [max(curr, len(entry)) for curr, entry in zip(lengths, row)]
+
+    remaining_columns = terminal_columns - sum(lengths)
+    # print(remaining_columns)
+    for row in rows:
+        row_progress_bars += make_progress_bar(row, remaining_columns, color=color)
 
     header = header_fmt(
         "  ".join(
@@ -987,6 +1002,8 @@ def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=
         )
         for original_row, processed_row in zip(rows, processed_rows)
     ]
+    for i in range(len(lines)):
+        lines[i] += "".join(row_progress_bars[i])
 
     return [header] + lines
 
@@ -998,36 +1015,46 @@ def strip_ansi(string):
     return ANSI_ESCAPE_RE.sub("", string)
 
 
+PROGRESS_BAR_CHARS_AND_COLORS = {
+    JobStatus.COMPLETED: (Color.GREEN, "#"),
+    JobStatus.RUNNING: (Color.CYAN, "="),
+    JobStatus.IDLE: (Color.BRIGHT_YELLOW, "-"),
+    JobStatus.HELD: (Color.RED, "!"),
+    JobStatus.SUSPENDED: (Color.RED, "!"),
+    JobStatus.REMOVED: (Color.RED, "!"),
+}
+
+PROGRESS_BAR_ORDER = (
+    JobStatus.COMPLETED,
+    JobStatus.RUNNING,
+    JobStatus.IDLE,
+    JobStatus.HELD,
+    JobStatus.SUSPENDED,
+    JobStatus.REMOVED,
+)
+
+
+def make_row_progress_bar(totals, width=None, color=True):
+    if width < 10:
+        print("TOO NARROW")
+    width -= 2
+    num_total = float(totals[TOTAL])
+    # switch to totals.get() to fix
+
+
 def make_progress_bar(totals, width=None, color=True):
     width = min(width, 79) - 2  # account for the wrapping [ ]
     num_total = float(totals[TOTAL])
 
-    PROGRESS_BAR_CHARS_AND_COLORS = {
-        JobStatus.COMPLETED: (Color.GREEN, "#"),
-        JobStatus.RUNNING: (Color.CYAN, "="),
-        JobStatus.IDLE: (Color.BRIGHT_YELLOW, "-"),
-        JobStatus.HELD: (Color.RED, "!"),
-        JobStatus.SUSPENDED: (Color.RED, "!"),
-        JobStatus.REMOVED: (Color.RED, "!"),
-    }
-    PROGRESS_BAR_ORDER = (
-        JobStatus.COMPLETED,
-        JobStatus.RUNNING,
-        JobStatus.IDLE,
-        JobStatus.HELD,
-        JobStatus.SUSPENDED,
-        JobStatus.REMOVED,
-    )
-
     fractions = [
         safe_divide(n, num_total)
         for n in (
-            totals[JobStatus.COMPLETED],
-            totals[JobStatus.RUNNING],
-            totals[JobStatus.IDLE],
-            totals[JobStatus.HELD],
-            totals[JobStatus.SUSPENDED],
-            totals[JobStatus.REMOVED],
+            totals.get(JobStatus.COMPLETED),
+            totals.get(JobStatus.RUNNING),
+            totals.get(JobStatus.IDLE),
+            totals.get(JobStatus.HELD),
+            totals.get(JobStatus.SUSPENDED),
+            totals.get(JobStatus.REMOVED),
         )
     ]
 
@@ -1112,6 +1139,8 @@ def make_summary_with_percentages(totals, width=None):
 
 
 def safe_divide(numerator, denominator, default=0):
+    if not numerator or not denominator:
+        return default
     try:
         return numerator / denominator
     except ZeroDivisionError:
