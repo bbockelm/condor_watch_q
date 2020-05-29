@@ -478,6 +478,7 @@ def watch_q(
                 # print(row_progress_bars)
                 if table:
                     msg += make_table(
+                        progress_bar=progress_bar,
                         terminal_columns=terminal_columns,
                         headers=[key] + headers,
                         rows=[row for _, row in rows_by_key],
@@ -486,9 +487,6 @@ def watch_q(
                         fill="-",
                     )
                     msg += [""]
-                # Iterate through every row in table, truncate to console width
-                for row in range(len(msg)):
-                    msg[row] = msg[row][:terminal_columns]
 
                 if progress_bar:
                     msg += make_progress_bar(
@@ -954,6 +952,7 @@ JOB_EVENT_STATUS_TRANSITIONS = {
 
 
 def make_table(
+    progress_bar,
     terminal_columns,
     headers,
     rows,
@@ -974,17 +973,11 @@ def make_table(
     lengths = [len(str(h)) for h in headers]
     align_methods = [alignment.get(h, "center") for h in headers]
     processed_rows = []
-    row_progress_bars = []
 
     for row in rows:
         processed_rows.append([str(row.get(key, fill)) + " " for key in headers])
     for row in processed_rows:
         lengths = [max(curr, len(entry)) for curr, entry in zip(lengths, row)]
-
-    remaining_columns = terminal_columns - sum(lengths)
-    # print(remaining_columns)
-    for row in rows:
-        row_progress_bars += make_progress_bar(row, remaining_columns, color=color)
 
     header = header_fmt(
         "  ".join(
@@ -1002,8 +995,15 @@ def make_table(
         )
         for original_row, processed_row in zip(rows, processed_rows)
     ]
-    for i in range(len(lines)):
-        lines[i] += "".join(row_progress_bars[i])
+
+    remaining_columns = terminal_columns - len(lines[0])
+    if progress_bar and remaining_columns > 10:
+        for i, row in zip(range(len(lines)), rows):
+            lines[i] += "".join(make_progress_bar(row, remaining_columns, color=color))
+    else:
+        # Iterate through every row in table, truncate to console width
+        for row in range(len(lines)):
+            lines[row] = lines[row][:terminal_columns]
 
     return [header] + lines
 
