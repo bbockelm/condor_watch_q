@@ -508,9 +508,10 @@ def watch_q(
                     msg += ["Updated at {}".format(now)] + [""]
 
                 if len(msg) > terminal_rows:
-                    msg = msg[:terminal_rows]
+                    msg = msg[: terminal_rows - 1]
                 # msg[:-1] because we need to strip the last blank section delimiter line off
                 msg = "\n".join(msg[:-1])
+                msg += "\nInsufficient terminal height to display full output!"
 
                 if not refresh:
                     msg += "\n..."
