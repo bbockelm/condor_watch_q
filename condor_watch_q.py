@@ -167,6 +167,14 @@ def parse_args():
         help="Enable/disable the progress bar. Enabled by default.",
     )
     parser.add_argument(
+        "-row-progress",
+        "-no-row-progress",
+        action=NegateAction,
+        nargs=0,
+        default=True,
+        help="Enable/disable the progress bar for each row. Enabled by default.",
+    )
+    parser.add_argument(
         "-summary",
         "-no-summary",
         action=NegateAction,
@@ -350,6 +358,7 @@ def cli():
         group_by=args.groupby,
         table=args.table,
         progress_bar=args.progress,
+        row_progress_bar=args.row_progress,
         summary=args.summary,
         summary_type=args.summary_type,
         updated_at=args.updated_at,
@@ -401,6 +410,7 @@ def watch_q(
     group_by="batch_name",
     table=True,
     progress_bar=True,
+    row_progress_bar=True,
     summary=True,
     summary_type="totals",
     updated_at=True,
@@ -473,8 +483,12 @@ def watch_q(
 
                 msg = []
 
+                terminal_columns = get_linux_console_width()
+
                 if table:
                     msg += make_table(
+                        row_progress_bar=row_progress_bar,
+                        terminal_columns=terminal_columns,
                         headers=[key] + headers,
                         rows=[row for _, row in rows_by_key],
                         row_fmt=row_fmt,
@@ -955,7 +969,17 @@ JOB_EVENT_STATUS_TRANSITIONS = {
 }
 
 
-def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=None):
+def make_table(
+    row_progress_bar,
+    terminal_columns,
+    headers,
+    rows,
+    fill="",
+    header_fmt=None,
+    row_fmt=None,
+    alignment=None,
+    color=True,
+):
     if header_fmt is None:
         header_fmt = lambda _: _
     if row_fmt is None:
@@ -965,12 +989,11 @@ def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=
 
     headers = tuple(headers)
     lengths = [len(str(h)) for h in headers]
-
     align_methods = [alignment.get(h, "center") for h in headers]
     processed_rows = []
-    for row in rows:
-        processed_rows.append([str(row.get(key, fill)) for key in headers])
 
+    for row in rows:
+        processed_rows.append([str(row.get(key, fill)) + " " for key in headers])
     for row in processed_rows:
         lengths = [max(curr, len(entry)) for curr, entry in zip(lengths, row)]
 
@@ -991,6 +1014,16 @@ def make_table(headers, rows, fill="", header_fmt=None, row_fmt=None, alignment=
         for original_row, processed_row in zip(rows, processed_rows)
     ]
 
+    remaining_columns = terminal_columns - len(strip_ansi(lines[0]))
+
+    if row_progress_bar and remaining_columns > 10:
+        for i, row in zip(range(len(lines)), rows):
+            lines[i] += "".join(make_progress_bar(row, remaining_columns, color=color))
+    else:
+        # Iterate through every row in table, truncate to console width
+        for row in range(len(lines)):
+            lines[row] = lines[row][:terminal_columns]
+
     return [header] + lines
 
 
@@ -1001,36 +1034,38 @@ def strip_ansi(string):
     return ANSI_ESCAPE_RE.sub("", string)
 
 
+PROGRESS_BAR_CHARS_AND_COLORS = {
+    JobStatus.COMPLETED: (Color.GREEN, "#"),
+    JobStatus.RUNNING: (Color.CYAN, "="),
+    JobStatus.IDLE: (Color.BRIGHT_YELLOW, "-"),
+    JobStatus.HELD: (Color.RED, "!"),
+    JobStatus.SUSPENDED: (Color.RED, "!"),
+    JobStatus.REMOVED: (Color.RED, "!"),
+}
+
+PROGRESS_BAR_ORDER = (
+    JobStatus.COMPLETED,
+    JobStatus.RUNNING,
+    JobStatus.IDLE,
+    JobStatus.HELD,
+    JobStatus.SUSPENDED,
+    JobStatus.REMOVED,
+)
+
+
 def make_progress_bar(totals, width=None, color=True):
     width = min(width, 79) - 2  # account for the wrapping [ ]
     num_total = float(totals[TOTAL])
 
-    PROGRESS_BAR_CHARS_AND_COLORS = {
-        JobStatus.COMPLETED: (Color.GREEN, "#"),
-        JobStatus.RUNNING: (Color.CYAN, "="),
-        JobStatus.IDLE: (Color.BRIGHT_YELLOW, "-"),
-        JobStatus.HELD: (Color.RED, "!"),
-        JobStatus.SUSPENDED: (Color.RED, "!"),
-        JobStatus.REMOVED: (Color.RED, "!"),
-    }
-    PROGRESS_BAR_ORDER = (
-        JobStatus.COMPLETED,
-        JobStatus.RUNNING,
-        JobStatus.IDLE,
-        JobStatus.HELD,
-        JobStatus.SUSPENDED,
-        JobStatus.REMOVED,
-    )
-
     fractions = [
         safe_divide(n, num_total)
         for n in (
-            totals[JobStatus.COMPLETED],
-            totals[JobStatus.RUNNING],
-            totals[JobStatus.IDLE],
-            totals[JobStatus.HELD],
-            totals[JobStatus.SUSPENDED],
-            totals[JobStatus.REMOVED],
+            totals.get(JobStatus.COMPLETED),
+            totals.get(JobStatus.RUNNING),
+            totals.get(JobStatus.IDLE),
+            totals.get(JobStatus.HELD),
+            totals.get(JobStatus.SUSPENDED),
+            totals.get(JobStatus.REMOVED),
         )
     ]
 
@@ -1115,6 +1150,8 @@ def make_summary_with_percentages(totals, width=None):
 
 
 def safe_divide(numerator, denominator, default=0):
+    if not numerator or not denominator:
+        return default
     try:
         return numerator / denominator
     except ZeroDivisionError:
