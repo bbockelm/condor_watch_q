@@ -167,6 +167,14 @@ def parse_args():
         help="Enable/disable the progress bar. Enabled by default.",
     )
     parser.add_argument(
+        "-row-progress",
+        "-no-row-progress",
+        action=NegateAction,
+        nargs=0,
+        default=True,
+        help="Enable/disable the progress bar for each row. Enabled by default.",
+    )
+    parser.add_argument(
         "-summary",
         "-no-summary",
         action=NegateAction,
@@ -350,6 +358,7 @@ def cli():
         group_by=args.groupby,
         table=args.table,
         progress_bar=args.progress,
+        row_progress_bar=args.row_progress,
         summary=args.summary,
         summary_type=args.summary_type,
         updated_at=args.updated_at,
@@ -401,6 +410,7 @@ def watch_q(
     group_by="batch_name",
     table=True,
     progress_bar=True,
+    row_progress_bar=True,
     summary=True,
     summary_type="totals",
     updated_at=True,
@@ -475,10 +485,9 @@ def watch_q(
 
                 terminal_columns = get_linux_console_width()
 
-                # print(row_progress_bars)
                 if table:
                     msg += make_table(
-                        progress_bar=progress_bar,
+                        row_progress_bar=row_progress_bar,
                         terminal_columns=terminal_columns,
                         headers=[key] + headers,
                         rows=[row for _, row in rows_by_key],
@@ -952,7 +961,7 @@ JOB_EVENT_STATUS_TRANSITIONS = {
 
 
 def make_table(
-    progress_bar,
+    row_progress_bar,
     terminal_columns,
     headers,
     rows,
@@ -996,8 +1005,9 @@ def make_table(
         for original_row, processed_row in zip(rows, processed_rows)
     ]
 
-    remaining_columns = terminal_columns - len(lines[0])
-    if progress_bar and remaining_columns > 10:
+    remaining_columns = terminal_columns - len(strip_ansi(lines[0]))
+
+    if row_progress_bar and remaining_columns > 10:
         for i, row in zip(range(len(lines)), rows):
             lines[i] += "".join(make_progress_bar(row, remaining_columns, color=color))
     else:
@@ -1032,14 +1042,6 @@ PROGRESS_BAR_ORDER = (
     JobStatus.SUSPENDED,
     JobStatus.REMOVED,
 )
-
-
-def make_row_progress_bar(totals, width=None, color=True):
-    if width < 10:
-        print("TOO NARROW")
-    width -= 2
-    num_total = float(totals[TOTAL])
-    # switch to totals.get() to fix
 
 
 def make_progress_bar(totals, width=None, color=True):
