@@ -396,7 +396,7 @@ GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.item
 
 def get_linux_console_width():
     terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
-    return int(terminal_columns)
+    return int(terminal_columns), int(terminal_rows)
 
 
 def watch_q(
@@ -483,7 +483,7 @@ def watch_q(
 
                 msg = []
 
-                terminal_columns = get_linux_console_width()
+                terminal_columns, terminal_rows = get_linux_console_width()
 
                 if table:
                     msg += make_table(
@@ -515,8 +515,15 @@ def watch_q(
                 if updated_at:
                     msg += ["Updated at {}".format(now)] + [""]
 
-                # msg[:-1] because we need to strip the last blank section delimiter line off
-                msg = "\n".join(msg[:-1])
+                if len(msg) > terminal_rows:
+                    msg = msg[: terminal_rows - 1]
+                    msg = (
+                        "\n".join(msg[:-1])
+                        + "\nInsufficient terminal height to display full output!"
+                    )
+                else:
+                    # msg[:-1] because we need to strip the last blank section delimiter line off
+                    msg = "\n".join(msg[:-1])
 
                 if not refresh:
                     msg += "\n..."
