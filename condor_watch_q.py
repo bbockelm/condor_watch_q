@@ -483,7 +483,7 @@ def watch_q(
 
                 msg = []
 
-                terminal_columns = get_linux_console_width()
+                terminal_columns, terminal_rows = get_linux_console_width()
 
                 if table:
                     msg += make_table(
@@ -496,12 +496,6 @@ def watch_q(
                         fill="-",
                     )
                     msg += [""]
-
-                terminal_columns, terminal_rows = get_linux_console_width()
-
-                # Iterate through every row in table, truncate to console width
-                for row in range(len(msg)):
-                    msg[row] = msg[row][:terminal_columns]
 
                 if progress_bar:
                     msg += make_progress_bar(
