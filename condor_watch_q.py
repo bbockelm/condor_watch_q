@@ -528,6 +528,9 @@ def watch_q(
                 if not refresh:
                     msg += "\n..."
 
+                if not exit_conditions:
+                    msg += "\nInput ^c to exit"
+
             if clear and move:
                 sys.stdout.write(move + clear + move)
                 sys.stdout.flush()
