@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-# Copyright 2019 HTCondor Team, Computer Sciences Department,
+# Copyright 2020 HTCondor Team, Computer Sciences Department,
 # University of Wisconsin-Madison, WI.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,11 +30,21 @@ import time
 import operator
 import re
 import contextlib
+import shutil
+import struct
 
 import htcondor
 import classad
 
-VERSION = "2020.06.04"
+try:
+    from colorama import init
+
+    init()
+    HAS_COLORAMA = True
+except ImportError:
+    HAS_COLORAMA = False
+
+IS_WINDOWS = os.name == "nt"
 
 
 def parse_args():
@@ -42,34 +52,25 @@ def parse_args():
         prog="condor_watch_q",
         description=textwrap.dedent(
             """
-            Track the status of HTCondor jobs over time without repeatedly 
-            querying the Schedd.
+            Track the status of jobs over time without repeatedly querying the condor_schedd.
 
-            If no users, cluster ids, or event logs are given, condor_watch_q will 
-            default to tracking all of the current user's jobs.
+            If no users, cluster ids, event logs, or batch names are given,
+            condor_watch_q will default to tracking all of the current user's jobs.
 
-            Any option beginning with a single "-" can be specified by its unique
-            prefix. For example, these commands are all equivalent:
-
-                condor_watch_q -clusters 12345
-                condor_watch_q -clu 12345
-                condor_watch_q -c 12345
-
-            By default, condor_watch_q will not exit on its own. You can tell it
-            to exit when certain conditions are met. For example, to exit when
-            all of the jobs it is tracking are done (with exit code 0) or when any
-            job is held (with exit code 1), run
+            By default, condor_watch_q will never exit on its own 
+            (unless it encounters an error or it is not tracking any jobs).
+            You can tell it to exit when certain conditions are met. For example,
+            to exit with status 0 when all of the jobs it is tracking are done
+            or with status 1 when any job is held, you could run
 
                 condor_watch_q -exit all,done,0 -exit any,held,1
-                
-            Version {}
-            """.format(
-                VERSION
-            )
+            """
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
+
+    # GENERAL OPTIONS
 
     parser.add_argument(
         "-help",
@@ -78,7 +79,12 @@ def parse_args():
         help="Show this help message and exit.",
     )
 
-    # select which jobs to track
+    parser.add_argument(
+        "-debug", action="store_true", help="Turn on HTCondor debug printing."
+    )
+
+    # TRACKING OPTIONS
+
     parser.add_argument(
         "-users", nargs="+", metavar="USER", help="Which users to track."
     )
@@ -107,33 +113,35 @@ def parse_args():
         help="Which schedd to contact for queries, if needed. Defaults to the local schedd.",
     )
 
-    # select when (if) to exit
+    # BEHAVIOR OPTIONS
+
     parser.add_argument(
         "-exit",
         action=ExitConditions,
-        metavar="GROUPER,JOB_STATUS[,EXIT_CODE]",
+        metavar="GROUPER,JOB_STATUS[,EXIT_STATUS]",
         help=textwrap.dedent(
             """
             Specify conditions under which condor_watch_q should exit. 
 
-            GROUPER is one of {{{}}}.
+            GROUPER is one of {{{exit_groupers}}}.
 
-            JOB_STATUS is one of {{{}}}.
+            JOB_STATUS is one of {{{job_statuses}}}.
 
-            "active" means "in the queue".
+            The "active" status means "in the queue",
+            and includes jobs in the idle, running, and held states.
+
+            ``EXIT_STATUS`` may be any valid exit status integer.
 
             To specify multiple exit conditions, pass this option multiple times.
+            condor_watch_q will exit when any of the conditions are satisfied.
             """.format(
-                ", ".join(EXIT_GROUPERS.keys()), ", ".join(EXIT_JOB_STATUS_CHECK.keys())
+                exit_groupers=", ".join(EXIT_GROUPERS.keys()),
+                job_statuses=", ".join(EXIT_JOB_STATUS_CHECK.keys()),
             )
         ),
     )
 
-    parser.add_argument(
-        "-abbreviate",
-        action="store_true",
-        help="Abbreviate path components to the shortest unique prefix.",
-    )
+    # DISPLAY OPTIONS
 
     parser.add_argument(
         "-groupby",
@@ -143,13 +151,12 @@ def parse_args():
         help=textwrap.dedent(
             """
             Select what attribute to group jobs by.
-    
+
             Note that batch names can only be determined if the tracked jobs were
             found in the queue; if they were not, a default batch name is used.
             """
         ),
     )
-
     parser.add_argument(
         "-table",
         "-no-table",
@@ -198,12 +205,20 @@ def parse_args():
         help='Enable/disable the "updated at" line. Enabled by default.',
     )
     parser.add_argument(
+        "-abbreviate",
+        "-no-abbreviate",
+        action=NegateAction,
+        nargs=0,
+        default=True,
+        help="Enable/disable abbreviating path components to the shortest somewhat-unique prefix. Disabled by default.",
+    )
+    parser.add_argument(
         "-color",
         "-no-color",
         action=NegateAction,
         nargs=0,
-        default=sys.stdout.isatty(),
-        help="Enable/disable colored output. Enabled by default if STDOUT is a terminal.",
+        default=sys.stdout.isatty() and (not IS_WINDOWS or HAS_COLORAMA),
+        help="Enable/disable colored output. Enabled by default if connected to a tty. Disabled on Windows if colorama is not available.",
     )
     parser.add_argument(
         "-refresh",
@@ -211,11 +226,7 @@ def parse_args():
         action=NegateAction,
         nargs=0,
         default=sys.stdout.isatty(),
-        help="Enable/disable refreshing output (instead of appending). Enabled by default if STDOUT is a terminal.",
-    )
-
-    parser.add_argument(
-        "-debug", action="store_true", help="Turn on HTCondor debug printing."
+        help="Enable/disable refreshing output (instead of appending). Enabled by default if connected to a tty.",
     )
 
     args, unknown = parser.parse_known_args()
@@ -238,6 +249,12 @@ def parse_args():
 
 
 def check_unknown_args_for_known_errors(parser, unknown_args):
+    """
+    This function tries to capture known errors in the arguments that
+    argparse fails to parse and emit our own error messages.
+    Individual args are passed to _check_unknown_arg for processing.
+    Common errors are trying to use condor_q-like arguments.
+    """
     unknown_args = iter(unknown_args)
     for arg in unknown_args:
         error_message = _check_unknown_arg(arg, unknown_args)
@@ -301,38 +318,40 @@ class ExitConditions(argparse.Action):
     def __call__(self, parser, args, values, option_string=None):
         v = values.split(",")
         if len(v) == 3:
-            grouper, status, exit_code = v
+            grouper, status, exit_status = v
         elif len(v) == 2:
             grouper, status = v
-            exit_code = 0
+            exit_status = 0
         else:
             parser.error(message="invalid -exit specification")
 
         if grouper not in EXIT_GROUPERS:
             parser.error(
-                message='invalid GROUPER "{}", must be one of {{ {} }}'.format(
-                    grouper, ", ".join(EXIT_GROUPERS.keys())
+                message='invalid GROUPER "{grouper}", must be one of {{{groupers}}}'.format(
+                    grouper=grouper, groupers=", ".join(EXIT_GROUPERS.keys())
                 )
             )
 
         if status not in EXIT_JOB_STATUS_CHECK:
             parser.error(
-                message='invalid JOB_STATUS "{}", must be one of {{ {} }}'.format(
-                    status, ", ".join(EXIT_JOB_STATUS_CHECK.keys())
+                message='invalid JOB_STATUS "{status}", must be one of {{{statuses}}}'.format(
+                    status=status, statuses=", ".join(EXIT_JOB_STATUS_CHECK.keys())
                 )
             )
 
         try:
-            exit_code = int(exit_code)
+            exit_status = int(exit_status)
         except ValueError:
             parser.error(
-                message='EXIT_CODE must be an integer, but was "{}"'.format(exit_code)
+                message='exit_status must be an integer, but was "{}"'.format(
+                    exit_status
+                )
             )
 
         if getattr(args, self.dest, None) is None:
             setattr(args, self.dest, [])
 
-        getattr(args, self.dest).append((grouper, status, exit_code))
+        getattr(args, self.dest).append((grouper, status, exit_status))
 
 
 class NegateAction(argparse.Action):
@@ -344,28 +363,37 @@ def cli():
     args = parse_args()
 
     if args.debug:
-        print("Enabling HTCondor debug output...", file=sys.stderr)
+        warning("Debug mode enabled...")
         htcondor.enable_debug()
 
-    return watch_q(
-        users=args.users,
-        cluster_ids=args.clusters,
-        event_logs=args.files,
-        batches=args.batches,
-        collector=args.collector,
-        schedd=args.schedd,
-        exit_conditions=args.exit,
-        group_by=args.groupby,
-        table=args.table,
-        progress_bar=args.progress,
-        row_progress_bar=args.row_progress,
-        summary=args.summary,
-        summary_type=args.summary_type,
-        updated_at=args.updated_at,
-        color=args.color,
-        refresh=args.refresh,
-        abbreviate_path_components=args.abbreviate,
-    )
+    try:
+        return watch_q(
+            users=args.users,
+            cluster_ids=args.clusters,
+            event_logs=args.files,
+            batches=args.batches,
+            collector=args.collector,
+            schedd=args.schedd,
+            exit_conditions=args.exit,
+            group_by=args.groupby,
+            table=args.table,
+            progress_bar=args.progress,
+            row_progress_bar=args.row_progress,
+            summary=args.summary,
+            summary_type=args.summary_type,
+            updated_at=args.updated_at,
+            color=args.color,
+            refresh=args.refresh,
+            abbreviate_path_components=args.abbreviate,
+        )
+    except Exception as e:
+        if args.debug:
+            raise
+
+        error(
+            "Unhandled error: {}. Re-run with -debug for a full stack trace.".format(e)
+        )
+        sys.exit(1)
 
 
 EXIT_GROUPERS = {"all": all, "any": any, "none": lambda _: not any(_)}
@@ -376,13 +404,11 @@ EXIT_JOB_STATUS_CHECK = {
     "held": lambda s: s is JobStatus.HELD,
 }
 
-
 TOTAL = "TOTAL"
 ACTIVE_JOBS = "JOB_IDS"
 EVENT_LOG = "LOG"
 CLUSTER_ID = "CLUSTER"
 BATCH_NAME = "BATCH"
-
 
 # attribute is the Python attribute name of the Cluster object
 # key is the key in the events and job rows
@@ -392,11 +418,6 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
     "batch_name": BATCH_NAME,
 }
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
-
-
-def get_linux_console_width():
-    terminal_rows, terminal_columns = os.popen("stty size", "r").read().split()
-    return int(terminal_columns), int(terminal_rows)
 
 
 def watch_q(
@@ -431,17 +452,17 @@ def watch_q(
         users, cluster_ids, event_logs, batches, collector=collector, schedd=schedd
     )
     if len(event_logs) == 0:
-        print("No jobs found")
+        warning("No jobs found, exiting...")
         sys.exit(0)
 
     tracker = JobStateTracker(event_logs, batch_names)
 
     exit_checks = []
-    for grouper, checker, exit_code in exit_conditions:
+    for grouper, checker, exit_status in exit_conditions:
         disp = "{} {}".format(grouper, checker)
         exit_grouper = EXIT_GROUPERS[grouper.lower()]
         exit_check = EXIT_JOB_STATUS_CHECK[checker.lower()]
-        exit_checks.append((exit_grouper, exit_check, exit_code, disp))
+        exit_checks.append((exit_grouper, exit_check, exit_status, disp))
 
     try:
         msg, move, clear = None, None, None
@@ -449,15 +470,15 @@ def watch_q(
         while True:
             with display_temporary_message("Processing new events...", enabled=refresh):
                 processing_messages = tracker.process_events()
+                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+                # "if msg is not None" skips the first iteration, when there's nothing to clear
                 if msg is not None and refresh:
                     msg = strip_ansi(msg)
                     prev_lines = list(msg.splitlines())
                     prev_len_lines = [len(line) for line in prev_lines]
                     move = "\033[{}A\r".format(len(prev_len_lines))
                     clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
-
-                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 groups_by_key = group_clusters_by_key(tracker.clusters, key)
                 rows_by_key, totals = make_rows_from_groups(groups_by_key, key)
@@ -483,7 +504,7 @@ def watch_q(
 
                 msg = []
 
-                terminal_columns, terminal_rows = get_linux_console_width()
+                terminal_columns, terminal_rows = get_terminal_size()
 
                 if table:
                     msg += make_table(
@@ -540,18 +561,48 @@ def watch_q(
 
             print(msg)
 
-            for grouper, checker, exit_code, disp in exit_checks:
+            for grouper, checker, exit_status, disp in exit_checks:
                 if grouper((checker(s) for s in tracker.job_states)):
                     print(
                         'Exiting with code {} because of condition "{}" at {}'.format(
-                            exit_code, disp, now
+                            exit_status, disp, now
                         )
                     )
-                    sys.exit(exit_code)
+                    sys.exit(exit_status)
 
             time.sleep(2)
     except KeyboardInterrupt:
         sys.exit(0)
+
+
+terminal_size = collections.namedtuple("terminal_size", ["columns", "lines"])
+
+
+def get_terminal_size():
+    try:
+        return shutil.get_terminal_size()
+    # TODO: remove this once we don't support Python 2 anymore
+    except AttributeError:  # Python 2 doesn't have shutil.get_terminal_size
+        try:
+            if IS_WINDOWS:
+                # https://stackoverflow.com/questions/566746/how-to-get-linux-console-window-width-in-python
+                from ctypes import windll, create_string_buffer
+
+                h = windll.kernel32.GetStdHandle(-12)
+                csbi = create_string_buffer(22)
+                res = windll.kernel32.GetConsoleScreenBufferInfo(h, csbi)
+                if res:
+                    (_, _, _, _, _, left, top, right, bottom, _, _,) = struct.unpack(
+                        "hhhhHhhhhhh", csbi.raw
+                    )
+                    return terminal_size(right - left + 1, bottom - top + 1)
+                else:
+                    raise OSError("Failed to get Windows terminal size")
+            else:
+                rows, cols = os.popen("stty size", "r").read().split()
+                return terminal_size(int(cols), int(rows))
+        except Exception:
+            return terminal_size(80, 24)
 
 
 @contextlib.contextmanager
@@ -575,6 +626,26 @@ PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
 def find_job_event_logs(
     users=None, cluster_ids=None, files=None, batches=None, collector=None, schedd=None
 ):
+    """
+    Discover job event logs to read events from based on various methods.
+
+    Parameters
+    ----------
+    users
+        Find job event logs for these user's active jobs.
+    cluster_ids
+        Find job event logs for these clusters.
+    files
+        Find these job event logs (basically, these just get passed straight through).
+    batches
+        Find job event logs for these batch names.
+    collector
+        Query this collector to find the schedd.
+        Defaults to the local collector.
+    schedd
+        Query this schedd for users, cluster_ids, and batches.
+        Defaults to the local schedd.
+    """
     if users is None:
         users = []
     if cluster_ids is None:
@@ -584,6 +655,14 @@ def find_job_event_logs(
     if batches is None:
         batches = []
 
+    clusters = set()
+    event_logs = set()
+    batch_names = {}
+    already_warned_missing_log = set()
+
+    for file in files:
+        event_logs.add(os.path.abspath(file))
+
     constraint = " || ".join(
         itertools.chain(
             ("Owner == {}".format(classad.quote(u)) for u in users),
@@ -591,31 +670,21 @@ def find_job_event_logs(
             ("JobBatchName == {}".format(b) for b in batches),
         )
     )
-    if constraint != "":
-        ads = get_schedd(collector=collector, schedd=schedd).query(
-            constraint, PROJECTION
-        )
-    else:
-        ads = []
 
-    cluster_ids = set()
-    event_logs = set()
-    batch_names = {}
-    already_warned_missing_log = set()
-    for ad in ads:
+    for ad in get_ads(constraint, collector, schedd):
         cluster_id = ad["ClusterId"]
-        cluster_ids.add(cluster_id)
+        clusters.add(cluster_id)
+
         batch_names[cluster_id] = ad.get("JobBatchName")
 
         try:
             log_path = ad["UserLog"]
         except KeyError:
             if cluster_id not in already_warned_missing_log:
-                print(
-                    "WARNING: cluster {} does not have a job event log file (set log=<path> in the submit description)".format(
+                warning(
+                    "Cluster {} does not have a job event log file (set log=<path> in the submit description)".format(
                         cluster_id
-                    ),
-                    file=sys.stderr,
+                    )
                 )
                 already_warned_missing_log.add(cluster_id)
             continue
@@ -627,10 +696,20 @@ def find_job_event_logs(
 
         event_logs.add(log_path)
 
-    for file in files:
-        event_logs.add(os.path.abspath(file))
+    return clusters, event_logs, batch_names
 
-    return cluster_ids, event_logs, batch_names
+
+def get_ads(constraint, collector, schedd):
+    if constraint == "":
+        return []
+
+    try:
+        return get_schedd(collector=collector, schedd=schedd).query(
+            constraint, PROJECTION
+        )
+    except Exception as e:
+        warning("Was not able to query to discover job event logs due to: {}".format(e))
+        return []
 
 
 def get_schedd(collector=None, schedd=None):
@@ -645,6 +724,8 @@ def get_schedd(collector=None, schedd=None):
 
 
 class Cluster:
+    """Holds the job state for a singe cluster."""
+
     def __init__(self, cluster_id, event_log_path, batch_name):
         self.cluster_id = cluster_id
         self.event_log_path = event_log_path
@@ -670,6 +751,12 @@ class Cluster:
 
 
 class JobStateTracker:
+    """
+    Tracks the job state from many event logs,
+    maintaining a mapping of cluster_id to Cluster
+    (available as the state attribute).
+    """
+
     def __init__(self, event_log_paths, batch_names):
         event_readers = {}
         for event_log_path in event_log_paths:
@@ -677,11 +764,10 @@ class JobStateTracker:
                 reader = htcondor.JobEventLog(event_log_path).events(0)
                 event_readers[event_log_path] = reader
             except (OSError, IOError) as e:
-                print(
-                    "WARNING: Could not open event log at {} for reading, so it will be ignored. Reason: {}".format(
+                warning(
+                    "Could not open event log at {} for reading, so it will be ignored. Reason: {}".format(
                         event_log_path, e
-                    ),
-                    file=sys.stderr,
+                    )
                 )
 
         self.event_readers = event_readers
@@ -692,6 +778,9 @@ class JobStateTracker:
         self.cluster_id_to_cluster = {}
 
     def process_events(self):
+        """
+        Process all currently-available events in all event logs.
+        """
         messages = []
 
         for event_log_path, events in self.event_readers.items():
@@ -702,8 +791,10 @@ class JobStateTracker:
                     break
                 except Exception as e:
                     messages.append(
-                        "ERROR: failed to parse event from {}. Reason: {}".format(
-                            event_log_path, e
+                        fmt_error(
+                            "Failed to parse event from {}. Reason: {}".format(
+                                event_log_path, e
+                            )
                         )
                     )
                     continue
@@ -748,7 +839,7 @@ def make_rows_from_groups(groups, key):
             totals[status] += row_data[status]
 
         if key == EVENT_LOG:
-            row_data[key] = normalize_path(attribute_value)
+            row_data[key] = nice_path(attribute_value)
         else:
             row_data[key] = attribute_value
 
@@ -818,6 +909,7 @@ def strip_empty_columns(rows_by_key):
 
 
 def row_data_from_job_state(clusters):
+    """Construct the data for a single row."""
     row_data = {js: 0 for js in JobStatus}
     active_job_ids = []
 
@@ -840,7 +932,14 @@ def row_data_from_job_state(clusters):
     return row_data
 
 
-def normalize_path(path):
+def nice_path(path):
+    """
+    Try to find a "nice" representation of a path.
+    The shortest (by string length) of these options is returned:
+      - the absolute path
+      - the path relative to the current user's home directory
+      - the path relative to the current working directory
+    """
     possibilities = []
 
     abs = os.path.abspath(path)
@@ -860,43 +959,56 @@ def normalize_path(path):
 
 
 def abbreviate_path(path):
+    """
+    Abbreviate a filesystem path by finding somewhat-unique prefixes for each
+    component in the path.
+
+    If the path was /home/foobar/wizbang/events.log and there was nothing else in any
+    of those directories, the result would be /h/f/w/events.log . If there was a
+    directory /home/foobar/wizard, the result would be /h/f/wizb/events.log .
+    """
     abbreviated_components = []
-    path_to_here = ""
+    path_so_far = ""
     components = split_all(path)
     for component in components[:-1]:
-        path_to_here = os.path.expanduser(os.path.join(path_to_here, component))
+        # the actual, unabbreviated path to this depth in the path
+        path_so_far = os.path.expanduser(os.path.join(path_so_far, component))
 
+        # these have special meaning, so don't do anything to them
         if component in ("~", "."):
             abbreviated_components.append(component)
             continue
 
-        contents = os.listdir(os.path.dirname(path_to_here))
+        contents = os.listdir(os.path.dirname(path_so_far))
         if len(contents) == 1:
             longest_common = ""
         else:
             longest_common = os.path.commonprefix(contents)
 
+        # tack on the common prefix plus one extra character to give a degree of uniqueness
         abbreviated_components.append(component[: len(longest_common) + 1])
 
+    # tack on the last path component as-is; this is the actual event log file name
     abbreviated_components.append(components[-1])
 
     return os.path.join(*abbreviated_components)
 
 
 def split_all(path):
-    allparts = []
+    """Consistently split a path into components."""
+    split_parts = []
     while 1:
         parts = os.path.split(path)
         if parts[0] == path:  # sentinel for absolute paths
-            allparts.insert(0, parts[0])
+            split_parts.insert(0, parts[0])
             break
         elif parts[1] == path:  # sentinel for relative paths
-            allparts.insert(0, parts[1])
+            split_parts.insert(0, parts[1])
             break
         else:
             path = parts[0]
-            allparts.insert(0, parts[1])
-    return allparts
+            split_parts.insert(0, parts[1])
+    return split_parts
 
 
 class JobStatus(enum.Enum):
@@ -1068,9 +1180,10 @@ def make_progress_bar(totals, width=None, color=True):
     ]
 
     bar_section_lengths = [int(width * f) for f in fractions]
+
     # give any rounded-off space to the longest part of the bar
     bar_section_lengths[argmax(bar_section_lengths)] += width - sum(bar_section_lengths)
-    # generate bar
+
     bar = "[{}]".format(
         "".join(
             colorize(
@@ -1086,10 +1199,14 @@ def make_progress_bar(totals, width=None, color=True):
     return [bar]
 
 
-def argmax(iter):
-    return max(enumerate(iter), key=lambda x: x[1])[0]
+def argmax(collection):
+    """
+    Return the index of the element of the collection with the maximum value.
+    """
+    return max(enumerate(collection), key=lambda x: x[1])[0]
 
 
+# this controls the ordering of the summary message
 SUMMARY_STATES = [
     JobStatus.COMPLETED,
     JobStatus.REMOVED,
@@ -1154,6 +1271,22 @@ def safe_divide(numerator, denominator, default=0):
         return numerator / denominator
     except ZeroDivisionError:
         return default
+
+
+def warning(msg):
+    print(fmt_warning(msg), file=sys.stderr)
+
+
+def fmt_warning(msg):
+    return "WARNING: {}".format(msg)
+
+
+def error(msg):
+    print(fmt_error(msg), file=sys.stderr)
+
+
+def fmt_error(msg):
+    return "ERROR: {}".format(msg)
 
 
 if __name__ == "__main__":
