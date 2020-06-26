@@ -1,0 +1,3 @@
+JOB  A  test.condor 
+JOB  B  test.condor 
+PARENT A CHILD B
