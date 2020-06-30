@@ -228,6 +228,14 @@ def parse_args():
         default=sys.stdout.isatty(),
         help="Enable/disable refreshing output (instead of appending). Enabled by default if connected to a tty.",
     )
+    # parser.add_argument(
+    #     "-dag",
+    #     "-no-dag",
+    #     action=NegateAction,
+    #     nargs=0,
+    #     default=True,
+    #     help="Enable dag, disable normal",
+    # )
 
     args, unknown = parser.parse_known_args()
 
@@ -420,6 +428,10 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
 
+def parse_dag(dagman_ids):
+    print("retrieve all jobs in dag")
+
+
 def watch_q(
     users=None,
     cluster_ids=None,
@@ -447,15 +459,23 @@ def watch_q(
     key = GROUPBY_ATTRIBUTE_TO_AD_KEY[group_by]
 
     row_fmt = (lambda s, r: colorize(s, determine_row_color(r))) if color else None
-
-    cluster_ids, event_logs, batch_names = find_job_event_logs(
+    (
+        cluster_ids,
+        event_logs,
+        batch_names,
+        dagman_ids,
+        dagman_node_logs,
+    ) = find_job_event_logs(
         users, cluster_ids, event_logs, batches, collector=collector, schedd=schedd
     )
+    print(dagman_ids)
+
     if len(event_logs) == 0:
         warning("No jobs found, exiting...")
         sys.exit(0)
-
-    tracker = JobStateTracker(event_logs, batch_names)
+    # print(cluster_ids)
+    # print(event_logs)
+    tracker = JobStateTracker(event_logs, batch_names, dagman_node_logs)
 
     exit_checks = []
     for grouper, checker, exit_status in exit_conditions:
@@ -623,11 +643,37 @@ def display_temporary_message(msg, enabled=True):
         yield
 
 
-PROJECTION = ["ClusterId", "Owner", "UserLog", "JobBatchName", "Iwd"]
+# get_schedd would only return these attributes
+# add to this so that identify if dagman job, if dagman, query again to get information on that job (dag specific information, pipe that to system)
+# Find nodes log
+# Collapse all cluster appear in query, associate with dag instead,
+# Every job in dag has special (submit event node, belong to certian dag node)
+# right now:
+# DAGManJobId for projection
+
+# add how many jobs are in the cluster
+# parse env to get _CONDOR_DAGMAN_LOG for finding number of jobs in dag
+PROJECTION = [
+    "ClusterId",
+    "Owner",
+    "UserLog",
+    "DAGManNodesLog",
+    "JobBatchName",
+    "Iwd",
+    "DAGManJobId",
+    "JobUniverse",
+    "Env",
+]
 
 
 def find_job_event_logs(
-    users=None, cluster_ids=None, files=None, batches=None, collector=None, schedd=None
+    users=None,
+    cluster_ids=None,
+    files=None,
+    batches=None,
+    dagman_ids=None,
+    collector=None,
+    schedd=None,
 ):
     """
     Discover job event logs to read events from based on various methods.
@@ -661,6 +707,8 @@ def find_job_event_logs(
     clusters = set()
     event_logs = set()
     batch_names = {}
+    dagman_ids = set()
+    dagman_node_logs = set()
     already_warned_missing_log = set()
 
     for file in files:
@@ -691,7 +739,6 @@ def find_job_event_logs(
                 )
                 already_warned_missing_log.add(cluster_id)
             continue
-
         # if the path is not absolute, try to make it absolute using the
         # job's initial working directory
         if not os.path.isabs(log_path):
@@ -699,7 +746,16 @@ def find_job_event_logs(
 
         event_logs.add(log_path)
 
-    return clusters, event_logs, batch_names
+        try:
+            dagman_id = ad["DAGManJobId"]
+            dagman_ids.add(dagman_id)
+            node_log = ad["DAGManNodesLog"]
+            dagman_node_logs.add(node_log)
+            # print("DAGMAN ID FOUND: {}".format(dagman_id))
+        except KeyError:
+            continue
+            # pass dagman_node_log and cluster names in dictionary
+    return clusters, event_logs, batch_names, dagman_ids, dagman_node_logs
 
 
 def get_ads(constraint, collector, schedd):
@@ -707,6 +763,9 @@ def get_ads(constraint, collector, schedd):
         return []
 
     try:
+        print(
+            get_schedd(collector=collector, schedd=schedd).query(constraint, PROJECTION)
+        )
         return get_schedd(collector=collector, schedd=schedd).query(
             constraint, PROJECTION
         )
@@ -726,6 +785,7 @@ def get_schedd(collector=None, schedd=None):
     return schedd
 
 
+# tracks state, (group by cluster id)
 class Cluster:
     """Holds the job state for a singe cluster."""
 
@@ -753,6 +813,7 @@ class Cluster:
         return iter(self.items())
 
 
+# keeps track of clusters
 class JobStateTracker:
     """
     Tracks the job state from many event logs,
@@ -760,11 +821,14 @@ class JobStateTracker:
     (available as the state attribute).
     """
 
-    def __init__(self, event_log_paths, batch_names):
+    def __init__(self, event_log_paths, batch_names, dagman_node_logs):
         event_readers = {}
-        for event_log_path in event_log_paths:
+        # Changed to dagman_node_logs to parse nodes in list
+        for event_log_path in dagman_node_logs:
             try:
+                # can be used to parse dagman log files
                 reader = htcondor.JobEventLog(event_log_path).events(0)
+                # print(reader)
                 event_readers[event_log_path] = reader
             except (OSError, IOError) as e:
                 warning(
@@ -777,6 +841,7 @@ class JobStateTracker:
         self.state = collections.defaultdict(lambda: collections.defaultdict(dict))
 
         self.batch_names = batch_names
+        # self.dagman_ids = dagman_ids
 
         self.cluster_id_to_cluster = {}
 
@@ -785,11 +850,12 @@ class JobStateTracker:
         Process all currently-available events in all event logs.
         """
         messages = []
-
+        # print(self.event_readers.items())
         for event_log_path, events in self.event_readers.items():
             while True:
                 try:
                     event = next(events)
+                    # print(event)
                 except StopIteration:
                     break
                 except Exception as e:
@@ -816,7 +882,6 @@ class JobStateTracker:
                 )
 
                 cluster[event.proc] = new_status
-
         return messages
 
     @property

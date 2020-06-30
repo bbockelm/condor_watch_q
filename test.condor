@@ -1,5 +1,5 @@
 executable              = /bin/sleep
-arguments               = 15
+arguments               = 10
 log                     = sleep.log
 output                  = outfile.txt
 error                   = errors.txt
