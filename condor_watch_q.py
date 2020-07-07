@@ -1249,7 +1249,10 @@ def make_table(
         for original_row, processed_row in zip(rows, processed_rows)
     ]
 
-    remaining_columns = terminal_columns - len(strip_ansi(lines[0]))
+    try:
+        remaining_columns = terminal_columns - len(strip_ansi(lines[0]))
+    except IndexError:
+        remaining_columns = 0
 
     if row_progress_bar and remaining_columns > 10:
         for i, row in zip(range(len(lines)), rows):
