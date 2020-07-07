@@ -468,15 +468,15 @@ def watch_q(
     ) = find_job_event_logs(
         users, cluster_ids, event_logs, batches, collector=collector, schedd=schedd
     )
-    print(dagman_ids)
 
     if len(event_logs) == 0:
         warning("No jobs found, exiting...")
         sys.exit(0)
-    # print(cluster_ids)
-    # print(event_logs)
-    tracker = JobStateTracker(event_logs, batch_names, dagman_node_logs)
 
+    # print("DAGMANNODE LOG: ", dagman_node_logs)
+    # print("EVENT LOG:", event_logs)
+
+    tracker = JobStateTracker(event_logs, batch_names, dagman_node_logs)
     exit_checks = []
     for grouper, checker, exit_status in exit_conditions:
         disp = "{} {}".format(grouper, checker)
@@ -501,8 +501,9 @@ def watch_q(
                     clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
 
                 groups_by_key = group_clusters_by_key(tracker.clusters, key)
+                # print(groups_by_key)
                 rows_by_key, totals = make_rows_from_groups(groups_by_key, key)
-
+                # print(rows_by_key)
                 headers, rows_by_key = strip_empty_columns(rows_by_key)
 
                 # strip out 0 values
@@ -662,8 +663,36 @@ PROJECTION = [
     "Iwd",
     "DAGManJobId",
     "JobUniverse",
-    "Env",
+    "DAG_NodesTotal",
 ]
+# tracks all information in a dag/ nodes.log file
+class Dag:
+    def __init__(self, cluster_id, dag_nodes_path, batch_name):
+        self.dag_nodes_path = dag_nodes_path
+        self.cluster_id = cluster_id
+        self.job_to_state = {}
+        self._batch_name = batch_name
+        self.job_count = 0
+
+    @property
+    def batch_name(self):
+        return self._batch_name or "ID: {}".format(self.cluster_id)
+
+    def __setitem__(self, key, value):
+        self.job_to_state[key] = value
+
+    def __getitem__(self, item):
+        return self.job_to_state[item]
+
+    def items(self):
+        return self.job_to_state.items()
+
+    def __iter__(self):
+        return iter(self.items())
+
+    # Projection check if contains "DAG_NodesTotal"
+    def update_job_count(self, job_count):
+        self.job_count = job_count
 
 
 def find_job_event_logs(
@@ -749,12 +778,18 @@ def find_job_event_logs(
         try:
             dagman_id = ad["DAGManJobId"]
             dagman_ids.add(dagman_id)
-            node_log = ad["DAGManNodesLog"]
-            dagman_node_logs.add(node_log)
             # print("DAGMAN ID FOUND: {}".format(dagman_id))
         except KeyError:
             continue
-            # pass dagman_node_log and cluster names in dictionary
+
+        try:
+            node_log = ad["DAGManNodesLog"]
+            dagman_node_logs.add(node_log)
+        except KeyError:
+            continue
+
+        # print(dagman_id, node_log)
+        # pass dagman_node_log and cluster names in dictionary
     return clusters, event_logs, batch_names, dagman_ids, dagman_node_logs
 
 
@@ -763,9 +798,9 @@ def get_ads(constraint, collector, schedd):
         return []
 
     try:
-        print(
-            get_schedd(collector=collector, schedd=schedd).query(constraint, PROJECTION)
-        )
+        # print(
+        #     get_schedd(collector=collector, schedd=schedd).query(constraint, PROJECTION)
+        # )
         return get_schedd(collector=collector, schedd=schedd).query(
             constraint, PROJECTION
         )
@@ -838,10 +873,12 @@ class JobStateTracker:
                 )
 
         self.event_readers = event_readers
+        # print(self.event_readers)
         self.state = collections.defaultdict(lambda: collections.defaultdict(dict))
 
         self.batch_names = batch_names
         # self.dagman_ids = dagman_ids
+        self.path_to_batch = {}
 
         self.cluster_id_to_cluster = {}
 
@@ -871,15 +908,35 @@ class JobStateTracker:
                 new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
                 if new_status is None:
                     continue
+                # print(event_log_path)
+                cluster = {}
+                if event_log_path not in self.path_to_batch:
+                    cluster = self.cluster_id_to_cluster.setdefault(
+                        event.cluster,
+                        Dag(
+                            cluster_id=event.cluster,
+                            dag_nodes_path=event_log_path,
+                            batch_name=self.batch_names.get(event.cluster),
+                        )
+                        # Cluster(
+                        #     cluster_id=event.cluster,
+                        #     event_log_path=event_log_path,
+                        #     batch_name=self.batch_names.get(event.cluster),
+                        # ),
+                    )
+                    self.path_to_batch[event_log_path] = event.cluster
+                else:
+                    # maybe never reached
+                    if event.cluster in self.cluster_id_to_cluster:
+                        cluster = self.cluster_id_to_cluster[event.cluster]
+                    else:
+                        # add job to the existing event
+                        existing_dag = self.path_to_batch[event_log_path]
+                        cluster = self.cluster_id_to_cluster[existing_dag]
 
-                cluster = self.cluster_id_to_cluster.setdefault(
-                    event.cluster,
-                    Cluster(
-                        cluster_id=event.cluster,
-                        event_log_path=event_log_path,
-                        batch_name=self.batch_names.get(event.cluster),
-                    ),
-                )
+                # self.path_to_batch.setdefault(event_log_path, event.cluster)
+                # print(cluster)
+                # if event.cluster in cluster:
 
                 cluster[event.proc] = new_status
         return messages
