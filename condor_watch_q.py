@@ -909,7 +909,6 @@ class JobStateTracker:
                 if new_status is None:
                     continue
                 # print(event_log_path)
-                cluster = {}
                 if event_log_path not in self.path_to_batch:
                     cluster = self.cluster_id_to_cluster.setdefault(
                         event.cluster,
@@ -917,27 +916,13 @@ class JobStateTracker:
                             cluster_id=event.cluster,
                             dag_nodes_path=event_log_path,
                             batch_name=self.batch_names.get(event.cluster),
-                        )
-                        # Cluster(
-                        #     cluster_id=event.cluster,
-                        #     event_log_path=event_log_path,
-                        #     batch_name=self.batch_names.get(event.cluster),
-                        # ),
+                        ),
                     )
                     self.path_to_batch[event_log_path] = event.cluster
                 else:
-                    # maybe never reached
-                    if event.cluster in self.cluster_id_to_cluster:
-                        cluster = self.cluster_id_to_cluster[event.cluster]
-                    else:
-                        # add job to the existing event
-                        existing_dag = self.path_to_batch[event_log_path]
-                        cluster = self.cluster_id_to_cluster[existing_dag]
-
-                # self.path_to_batch.setdefault(event_log_path, event.cluster)
-                # print(cluster)
-                # if event.cluster in cluster:
-
+                    existing_dag = self.path_to_batch[event_log_path]
+                    cluster = self.cluster_id_to_cluster[existing_dag]
+                    print(cluster)
                 cluster[event.proc] = new_status
         return messages
 
