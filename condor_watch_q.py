@@ -82,7 +82,6 @@ def parse_args():
     parser.add_argument(
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
-
     # TRACKING OPTIONS
 
     parser.add_argument(
@@ -228,17 +227,20 @@ def parse_args():
         default=sys.stdout.isatty(),
         help="Enable/disable refreshing output (instead of appending). Enabled by default if connected to a tty.",
     )
+    parser.add_argument("-dag", dest="dag", action="store_true")
+    parser.add_argument("-no-dag", dest="dag", action="store_false")
+
     # parser.add_argument(
     #     "-dag",
     #     "-no-dag",
     #     action=NegateAction,
     #     nargs=0,
-    #     default=True,
-    #     help="Enable dag, disable normal",
+    #     default=False,
+    #     help="Enable/disable tracking dag jobs. Disabled by default.",
     # )
 
     args, unknown = parser.parse_known_args()
-
+    print(args)
     if len(unknown) != 0:
         check_unknown_args_for_known_errors(parser, unknown)
 
@@ -252,7 +254,6 @@ def parse_args():
         "cluster": "cluster_id",
         "batch": "batch_name",
     }[args.groupby]
-
     return args
 
 
@@ -393,6 +394,7 @@ def cli():
             color=args.color,
             refresh=args.refresh,
             abbreviate_path_components=args.abbreviate,
+            dag=args.dag,
         )
     except Exception as e:
         if args.debug:
@@ -428,10 +430,6 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
 
-def parse_dag(dagman_ids):
-    print("retrieve all jobs in dag")
-
-
 def watch_q(
     users=None,
     cluster_ids=None,
@@ -450,6 +448,7 @@ def watch_q(
     color=True,
     refresh=True,
     abbreviate_path_components=False,
+    dag=False,
 ):
     if users is None and cluster_ids is None and event_logs is None and batches is None:
         users = [getpass.getuser()]
@@ -459,24 +458,24 @@ def watch_q(
     key = GROUPBY_ATTRIBUTE_TO_AD_KEY[group_by]
 
     row_fmt = (lambda s, r: colorize(s, determine_row_color(r))) if color else None
+
     (
         cluster_ids,
         event_logs,
         batch_names,
-        dagman_ids,
-        dagman_node_logs,
+        dagman_clusters_to_path,
     ) = find_job_event_logs(
         users, cluster_ids, event_logs, batches, collector=collector, schedd=schedd
     )
-
+    # print("dagman_clusters_to_path: ", dagman_clusters_to_path.keys())
     if len(event_logs) == 0:
         warning("No jobs found, exiting...")
         sys.exit(0)
 
     # print("DAGMANNODE LOG: ", dagman_node_logs)
     # print("EVENT LOG:", event_logs)
+    tracker = JobStateTracker(event_logs, batch_names)
 
-    tracker = JobStateTracker(event_logs, batch_names, dagman_node_logs)
     exit_checks = []
     for grouper, checker, exit_status in exit_conditions:
         disp = "{} {}".format(grouper, checker)
@@ -489,6 +488,7 @@ def watch_q(
 
         while True:
             with display_temporary_message("Processing new events...", enabled=refresh):
+                # print(event_logs)
                 processing_messages = tracker.process_events()
                 now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -500,11 +500,18 @@ def watch_q(
                     move = "\033[{}A\r".format(len(prev_len_lines))
                     clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
 
-                groups_by_key = group_clusters_by_key(tracker.clusters, key)
-                # print(groups_by_key)
+                if dag:
+                    groups_by_key = group_jobs_by_dag(
+                        tracker.clusters, key, dagman_clusters_to_path, batch_names
+                    )
+                else:
+                    groups_by_key = group_clusters_by_key(tracker.clusters, key)
+
                 rows_by_key, totals = make_rows_from_groups(groups_by_key, key)
-                # print(rows_by_key)
+
                 headers, rows_by_key = strip_empty_columns(rows_by_key)
+
+                # dagmannodes total information could be added here.
 
                 # strip out 0 values
                 rows_by_key = {
@@ -661,8 +668,6 @@ PROJECTION = [
     "DAGManNodesLog",
     "JobBatchName",
     "Iwd",
-    "DAGManJobId",
-    "JobUniverse",
     "DAG_NodesTotal",
 ]
 # tracks all information in a dag/ nodes.log file
@@ -672,7 +677,6 @@ class Dag:
         self.cluster_id = cluster_id
         self.job_to_state = {}
         self._batch_name = batch_name
-        self.job_count = 0
 
     @property
     def batch_name(self):
@@ -691,8 +695,10 @@ class Dag:
         return iter(self.items())
 
     # Projection check if contains "DAG_NodesTotal"
-    def update_job_count(self, job_count):
-        self.job_count = job_count
+    # def update_job_count(self, job_count):
+    #     self.job_count = job_count
+
+    # def add_job_to_state(self, key):
 
 
 def find_job_event_logs(
@@ -736,9 +742,10 @@ def find_job_event_logs(
     clusters = set()
     event_logs = set()
     batch_names = {}
-    dagman_ids = set()
-    dagman_node_logs = set()
+    dagman_node_nums = set()
     already_warned_missing_log = set()
+    dagman_clusters_to_path = {}
+    # contains_dags = False
 
     for file in files:
         event_logs.add(os.path.abspath(file))
@@ -770,27 +777,24 @@ def find_job_event_logs(
             continue
         # if the path is not absolute, try to make it absolute using the
         # job's initial working directory
-        if not os.path.isabs(log_path):
-            log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
+
+        if "DAGManNodesLog" in ad:
+            dagman_clusters_to_path[cluster_id] = ad["DAGManNodesLog"]
+            log_path = ad["DAGManNodesLog"]
+        else:
+            if not os.path.isabs(log_path):
+                log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
 
         event_logs.add(log_path)
 
         try:
-            dagman_id = ad["DAGManJobId"]
-            dagman_ids.add(dagman_id)
-            # print("DAGMAN ID FOUND: {}".format(dagman_id))
+            node_num = ad["DAG_NodesTotal"]
+            dagman_node_nums.add(node_num)
         except KeyError:
             continue
+        # print("KeyError: Can't find DAG_NodesTotal")
 
-        try:
-            node_log = ad["DAGManNodesLog"]
-            dagman_node_logs.add(node_log)
-        except KeyError:
-            continue
-
-        # print(dagman_id, node_log)
-        # pass dagman_node_log and cluster names in dictionary
-    return clusters, event_logs, batch_names, dagman_ids, dagman_node_logs
+    return (clusters, event_logs, batch_names, dagman_clusters_to_path)
 
 
 def get_ads(constraint, collector, schedd):
@@ -798,9 +802,6 @@ def get_ads(constraint, collector, schedd):
         return []
 
     try:
-        # print(
-        #     get_schedd(collector=collector, schedd=schedd).query(constraint, PROJECTION)
-        # )
         return get_schedd(collector=collector, schedd=schedd).query(
             constraint, PROJECTION
         )
@@ -856,14 +857,11 @@ class JobStateTracker:
     (available as the state attribute).
     """
 
-    def __init__(self, event_log_paths, batch_names, dagman_node_logs):
+    def __init__(self, event_log_paths, batch_names):
         event_readers = {}
-        # Changed to dagman_node_logs to parse nodes in list
-        for event_log_path in dagman_node_logs:
+        for event_log_path in event_log_paths:
             try:
-                # can be used to parse dagman log files
                 reader = htcondor.JobEventLog(event_log_path).events(0)
-                # print(reader)
                 event_readers[event_log_path] = reader
             except (OSError, IOError) as e:
                 warning(
@@ -873,12 +871,9 @@ class JobStateTracker:
                 )
 
         self.event_readers = event_readers
-        # print(self.event_readers)
         self.state = collections.defaultdict(lambda: collections.defaultdict(dict))
 
         self.batch_names = batch_names
-        # self.dagman_ids = dagman_ids
-        self.path_to_batch = {}
 
         self.cluster_id_to_cluster = {}
 
@@ -887,12 +882,11 @@ class JobStateTracker:
         Process all currently-available events in all event logs.
         """
         messages = []
-        # print(self.event_readers.items())
+
         for event_log_path, events in self.event_readers.items():
             while True:
                 try:
                     event = next(events)
-                    # print(event)
                 except StopIteration:
                     break
                 except Exception as e:
@@ -908,22 +902,18 @@ class JobStateTracker:
                 new_status = JOB_EVENT_STATUS_TRANSITIONS.get(event.type, None)
                 if new_status is None:
                     continue
-                # print(event_log_path)
-                if event_log_path not in self.path_to_batch:
-                    cluster = self.cluster_id_to_cluster.setdefault(
-                        event.cluster,
-                        Dag(
-                            cluster_id=event.cluster,
-                            dag_nodes_path=event_log_path,
-                            batch_name=self.batch_names.get(event.cluster),
-                        ),
-                    )
-                    self.path_to_batch[event_log_path] = event.cluster
-                else:
-                    existing_dag = self.path_to_batch[event_log_path]
-                    cluster = self.cluster_id_to_cluster[existing_dag]
-                    print(cluster)
+
+                cluster = self.cluster_id_to_cluster.setdefault(
+                    event.cluster,
+                    Cluster(
+                        cluster_id=event.cluster,
+                        event_log_path=event_log_path,
+                        batch_name=self.batch_names.get(event.cluster),
+                    ),
+                )
+
                 cluster[event.proc] = new_status
+
         return messages
 
     @property
@@ -994,12 +984,28 @@ def determine_row_color(row):
         return Color.BRIGHT_WHITE
 
 
+# pass dag, understand dag grouping, pass in argument?
 def group_clusters_by_key(clusters, key):
     getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
-
     groups = collections.defaultdict(list)
+
     for cluster in clusters:
         groups[getter(cluster)].append(cluster)
+
+    return groups
+
+
+# assume only dags
+def group_jobs_by_dag(clusters, key, dagman_clusters_to_path, batch_names):
+    groups = collections.defaultdict(list)
+
+    # reverse dictionary
+    dagman_path_to_clusters = {v: k for k, v in dagman_clusters_to_path.items()}
+
+    for cluster in clusters:
+        if cluster.event_log_path in dagman_path_to_clusters:
+            key = dagman_path_to_clusters[cluster.event_log_path]
+            groups[batch_names[key]].append(cluster)
 
     return groups
 

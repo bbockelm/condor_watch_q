@@ -23,7 +23,6 @@ for x in range(1, 6):
         os.chdir(os.path.dirname(log_dir))
         os.mkdir("{}".format(x))
         os.chdir("{}".format(x))
-
         shutil.copy(os.path.join(test_file, "test.dag"), os.getcwd())
         shutil.copy(os.path.join(test_file, "test.condor"), os.getcwd())
         os.rename("test.dag", "test{}.dag".format(x))

@@ -1,5 +1,8 @@
 JOB  A  test.condor 
 JOB  B  test.condor
 JOB  C  test.condor
+JOB  D  test.condor
+
 PARENT A CHILD B
-PARENT B CHILD C
+PARENT A CHILD C
+PARENT A CHILD D
