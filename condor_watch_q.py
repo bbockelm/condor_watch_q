@@ -644,17 +644,6 @@ def display_temporary_message(msg, enabled=True):
     else:
         yield
 
-
-# get_schedd would only return these attributes
-# add to this so that identify if dagman job, if dagman, query again to get information on that job (dag specific information, pipe that to system)
-# Find nodes log
-# Collapse all cluster appear in query, associate with dag instead,
-# Every job in dag has special (submit event node, belong to certian dag node)
-# right now:
-# DAGManJobId for projection
-
-# add how many jobs are in the cluster
-# parse env to get _CONDOR_DAGMAN_LOG for finding number of jobs in dag
 PROJECTION = [
     "ClusterId",
     "Owner",
