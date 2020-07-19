@@ -229,7 +229,7 @@ def parse_args():
     )
     parser.add_argument("-dag", dest="dag", action="store_true")
     parser.add_argument("-no-dag", dest="dag", action="store_false")
-
+    # This keeps returning false, reverted to adding seperately
     # parser.add_argument(
     #     "-dag",
     #     "-no-dag",
@@ -467,13 +467,10 @@ def watch_q(
     ) = find_job_event_logs(
         users, cluster_ids, event_logs, batches, collector=collector, schedd=schedd
     )
-    # print("dagman_clusters_to_path: ", dagman_clusters_to_path.keys())
     if len(event_logs) == 0:
         warning("No jobs found, exiting...")
         sys.exit(0)
 
-    # print("DAGMANNODE LOG: ", dagman_node_logs)
-    # print("EVENT LOG:", event_logs)
     tracker = JobStateTracker(event_logs, batch_names)
 
     exit_checks = []
@@ -488,7 +485,6 @@ def watch_q(
 
         while True:
             with display_temporary_message("Processing new events...", enabled=refresh):
-                # print(event_logs)
                 processing_messages = tracker.process_events()
                 now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -510,8 +506,6 @@ def watch_q(
                 rows_by_key, totals = make_rows_from_groups(groups_by_key, key)
 
                 headers, rows_by_key = strip_empty_columns(rows_by_key)
-
-                # dagmannodes total information could be added here.
 
                 # strip out 0 values
                 rows_by_key = {
@@ -670,37 +664,6 @@ PROJECTION = [
     "Iwd",
     "DAG_NodesTotal",
 ]
-# tracks all information in a dag/ nodes.log file
-class Dag:
-    def __init__(self, cluster_id, dag_nodes_path, batch_name):
-        self.dag_nodes_path = dag_nodes_path
-        self.cluster_id = cluster_id
-        self.job_to_state = {}
-        self._batch_name = batch_name
-
-    @property
-    def batch_name(self):
-        return self._batch_name or "ID: {}".format(self.cluster_id)
-
-    def __setitem__(self, key, value):
-        self.job_to_state[key] = value
-
-    def __getitem__(self, item):
-        return self.job_to_state[item]
-
-    def items(self):
-        return self.job_to_state.items()
-
-    def __iter__(self):
-        return iter(self.items())
-
-    # Projection check if contains "DAG_NodesTotal"
-    # def update_job_count(self, job_count):
-    #     self.job_count = job_count
-
-    # def add_job_to_state(self, key):
-
-
 def find_job_event_logs(
     users=None,
     cluster_ids=None,
@@ -745,7 +708,6 @@ def find_job_event_logs(
     dagman_node_nums = set()
     already_warned_missing_log = set()
     dagman_clusters_to_path = {}
-    # contains_dags = False
 
     for file in files:
         event_logs.add(os.path.abspath(file))
@@ -792,7 +754,6 @@ def find_job_event_logs(
             dagman_node_nums.add(node_num)
         except KeyError:
             continue
-        # print("KeyError: Can't find DAG_NodesTotal")
 
     return (clusters, event_logs, batch_names, dagman_clusters_to_path)
 
@@ -983,8 +944,6 @@ def determine_row_color(row):
     else:
         return Color.BRIGHT_WHITE
 
-
-# pass dag, understand dag grouping, pass in argument?
 def group_clusters_by_key(clusters, key):
     getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
     groups = collections.defaultdict(list)
