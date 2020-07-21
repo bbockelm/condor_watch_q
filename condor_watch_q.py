@@ -730,8 +730,7 @@ def find_job_event_logs(
         # job's initial working directory
 
         if "DAGManNodesLog" in ad:
-            dagman_clusters_to_path[cluster_id] = ad["DAGManNodesLog"]
-            log_path = ad["DAGManNodesLog"]
+            dagman_clusters_to_path[cluster_id] = log_path = ad["DAGManNodesLog"]
         else:
             if not os.path.isabs(log_path):
                 log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
