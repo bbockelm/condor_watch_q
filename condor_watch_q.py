@@ -240,7 +240,6 @@ def parse_args():
     # )
 
     args, unknown = parser.parse_known_args()
-    print(args)
     if len(unknown) != 0:
         check_unknown_args_for_known_errors(parser, unknown)
 
@@ -430,6 +429,22 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
 
+def group_clusters(clusters, key, dagman_clusters_to_paths, batch_names):
+    groups = collections.defaultdict(list)
+    getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
+    # reverse dictionary
+    dagman_path_to_clusters = {v: k for k, v in dagman_clusters_to_paths.items()}
+
+    for cluster in clusters:
+        if cluster.event_log_path in dagman_path_to_clusters:
+            dag_name = dagman_path_to_clusters[cluster.event_log_path]
+            groups[batch_names[dag_name]].append(cluster)
+        else:
+            groups[getter(cluster)].append(cluster)
+
+    return groups
+
+
 def watch_q(
     users=None,
     cluster_ids=None,
@@ -463,7 +478,7 @@ def watch_q(
         cluster_ids,
         event_logs,
         batch_names,
-        dagman_clusters_to_path,
+        dagman_clusters_to_paths,
     ) = find_job_event_logs(
         users, cluster_ids, event_logs, batches, collector=collector, schedd=schedd
     )
@@ -496,14 +511,12 @@ def watch_q(
                     move = "\033[{}A\r".format(len(prev_len_lines))
                     clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
 
-                if dag:
-                    groups_by_key = group_jobs_by_dag(
-                        tracker.clusters, key, dagman_clusters_to_path, batch_names
-                    )
-                else:
-                    groups_by_key = group_clusters_by_key(tracker.clusters, key)
+                # combination of group by dag and group by key
+                groups = group_clusters(
+                    tracker.clusters, key, dagman_clusters_to_paths, batch_names
+                )
 
-                rows_by_key, totals = make_rows_from_groups(groups_by_key, key)
+                rows_by_key, totals = make_rows_from_groups(groups, key)
 
                 headers, rows_by_key = strip_empty_columns(rows_by_key)
 
@@ -520,7 +533,7 @@ def watch_q(
                 rows_by_key = sorted(
                     rows_by_key.items(),
                     key=lambda key_row: min(
-                        cluster.cluster_id for cluster in groups_by_key[key_row[0]]
+                        cluster.cluster_id for cluster in groups[key_row[0]]
                     ),
                 )
 
@@ -644,6 +657,7 @@ def display_temporary_message(msg, enabled=True):
     else:
         yield
 
+
 PROJECTION = [
     "ClusterId",
     "Owner",
@@ -653,6 +667,8 @@ PROJECTION = [
     "Iwd",
     "DAG_NodesTotal",
 ]
+
+
 def find_job_event_logs(
     users=None,
     cluster_ids=None,
@@ -694,9 +710,8 @@ def find_job_event_logs(
     clusters = set()
     event_logs = set()
     batch_names = {}
-    dagman_node_nums = set()
     already_warned_missing_log = set()
-    dagman_clusters_to_path = {}
+    dagman_clusters_to_paths = {}
 
     for file in files:
         event_logs.add(os.path.abspath(file))
@@ -717,6 +732,7 @@ def find_job_event_logs(
 
         try:
             log_path = ad["UserLog"]
+
         except KeyError:
             if cluster_id not in already_warned_missing_log:
                 warning(
@@ -730,20 +746,14 @@ def find_job_event_logs(
         # job's initial working directory
 
         if "DAGManNodesLog" in ad:
-            dagman_clusters_to_path[cluster_id] = log_path = ad["DAGManNodesLog"]
+            dagman_clusters_to_paths[cluster_id] = log_path = ad["DAGManNodesLog"]
         else:
             if not os.path.isabs(log_path):
                 log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
 
         event_logs.add(log_path)
 
-        try:
-            node_num = ad["DAG_NodesTotal"]
-            dagman_node_nums.add(node_num)
-        except KeyError:
-            continue
-
-    return (clusters, event_logs, batch_names, dagman_clusters_to_path)
+    return (clusters, event_logs, batch_names, dagman_clusters_to_paths)
 
 
 def get_ads(constraint, collector, schedd):
@@ -931,30 +941,6 @@ def determine_row_color(row):
         return Color.YELLOW
     else:
         return Color.BRIGHT_WHITE
-
-def group_clusters_by_key(clusters, key):
-    getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
-    groups = collections.defaultdict(list)
-
-    for cluster in clusters:
-        groups[getter(cluster)].append(cluster)
-
-    return groups
-
-
-# assume only dags
-def group_jobs_by_dag(clusters, key, dagman_clusters_to_path, batch_names):
-    groups = collections.defaultdict(list)
-
-    # reverse dictionary
-    dagman_path_to_clusters = {v: k for k, v in dagman_clusters_to_path.items()}
-
-    for cluster in clusters:
-        if cluster.event_log_path in dagman_path_to_clusters:
-            key = dagman_path_to_clusters[cluster.event_log_path]
-            groups[batch_names[key]].append(cluster)
-
-    return groups
 
 
 def strip_empty_columns(rows_by_key):
