@@ -438,6 +438,9 @@ def group_clusters(clusters, key, dagman_clusters_to_paths, batch_names, check_d
             # Track only regular jobs, ignore dagman jobs
             if cluster_id not in check_dagman:
                 groups[getter(cluster)].append(cluster)
+    if not groups:
+        print("\nDAGManNodesLog not yet available please run command again")
+        sys.exit(1)
     return groups
 
 
