@@ -227,17 +227,6 @@ def parse_args():
         default=sys.stdout.isatty(),
         help="Enable/disable refreshing output (instead of appending). Enabled by default if connected to a tty.",
     )
-    parser.add_argument("-dag", dest="dag", action="store_true")
-    parser.add_argument("-no-dag", dest="dag", action="store_false")
-    # This keeps returning false, reverted to adding seperately
-    # parser.add_argument(
-    #     "-dag",
-    #     "-no-dag",
-    #     action=NegateAction,
-    #     nargs=0,
-    #     default=False,
-    #     help="Enable/disable tracking dag jobs. Disabled by default.",
-    # )
 
     args, unknown = parser.parse_known_args()
     if len(unknown) != 0:
@@ -393,7 +382,6 @@ def cli():
             color=args.color,
             refresh=args.refresh,
             abbreviate_path_components=args.abbreviate,
-            dag=args.dag,
         )
     except Exception as e:
         if args.debug:
@@ -429,10 +417,9 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
 
-def group_dag(clusters, key, dagman_clusters_to_paths, batch_names):
+def group_clusters(clusters, key, dagman_clusters_to_paths, batch_names, check_dagman):
     groups = collections.defaultdict(list)
-
-    # reverse dictionary
+    getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
     dagman_path_to_clusters = {v: k for k, v in dagman_clusters_to_paths.items()}
 
     for cluster in clusters:
@@ -440,23 +427,17 @@ def group_dag(clusters, key, dagman_clusters_to_paths, batch_names):
         cluster_path = cluster.event_log_path
 
         if cluster_path in dagman_path_to_clusters:
-            if GROUPBY_AD_KEY_TO_ATTRIBUTE[key] == "batch_name":
+            if key == BATCH_NAME:
                 dag_name = dagman_path_to_clusters[cluster_path]
                 groups[batch_names[dag_name]].append(cluster)
-            elif GROUPBY_AD_KEY_TO_ATTRIBUTE[key] == "event_log_path":
+            elif key == EVENT_LOG:
                 groups[cluster_path].append(cluster)
             else:
                 groups[cluster_id].append(cluster)
-    return groups
-
-
-def group_jobs(clusters, key):
-    getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
-
-    groups = collections.defaultdict(list)
-    for cluster in clusters:
-        groups[getter(cluster)].append(cluster)
-
+        else:
+            # Track only regular jobs, ignore dagman jobs
+            if cluster_id not in check_dagman:
+                groups[getter(cluster)].append(cluster)
     return groups
 
 
@@ -494,6 +475,7 @@ def watch_q(
         event_logs,
         batch_names,
         dagman_clusters_to_paths,
+        check_dagman,
     ) = find_job_event_logs(
         users, cluster_ids, event_logs, batches, collector=collector, schedd=schedd
     )
@@ -526,13 +508,13 @@ def watch_q(
                     move = "\033[{}A\r".format(len(prev_len_lines))
                     clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
 
-                # combination of group by dag and group by key
-                if dag:
-                    groups = group_dag(
-                        tracker.clusters, key, dagman_clusters_to_paths, batch_names
-                    )
-                else:
-                    groups = group_jobs(tracker.clusters, key)
+                groups = group_clusters(
+                    tracker.clusters,
+                    key,
+                    dagman_clusters_to_paths,
+                    batch_names,
+                    check_dagman,
+                )
 
                 rows_by_key, totals = make_rows_from_groups(groups, key)
 
@@ -684,7 +666,7 @@ PROJECTION = [
     "JobBatchName",
     "Iwd",
     "DAG_NodesTotal",
-    "DAGManJobId",
+    "OtherJobRemoveRequirements",
 ]
 
 
@@ -731,6 +713,7 @@ def find_job_event_logs(
     batch_names = {}
     already_warned_missing_log = set()
     dagman_clusters_to_paths = {}
+    check_dagman = set()
 
     for file in files:
         event_logs.add(os.path.abspath(file))
@@ -772,11 +755,15 @@ def find_job_event_logs(
 
         event_logs.add(log_path)
 
+        if "OtherJobRemoveRequirements" in ad:
+            check_dagman.add(cluster_id)
+
     return (
         clusters,
         event_logs,
         batch_names,
         dagman_clusters_to_paths,
+        check_dagman,
     )
 
 
