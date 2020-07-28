@@ -439,6 +439,7 @@ def group_clusters(clusters, key, dagman_clusters_to_paths, batch_names, check_d
             if cluster_id not in check_dagman:
                 groups[getter(cluster)].append(cluster)
     if not groups:
+        # TODO add ability to requery instead of manual
         print("\nDAGManNodesLog not yet available please run command again")
         sys.exit(1)
     return groups
@@ -462,7 +463,6 @@ def watch_q(
     color=True,
     refresh=True,
     abbreviate_path_components=False,
-    dag=False,
 ):
     if users is None and cluster_ids is None and event_logs is None and batches is None:
         users = [getpass.getuser()]
