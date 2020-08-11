@@ -449,6 +449,9 @@ def group_clusters(
             if cluster.cluster_id not in dagman_job_cluster_ids:
                 groups[getter(cluster)].append(cluster)
 
+    if not dag_nodes_total:
+        group_nodes_total = dag_nodes_total
+
     return groups, group_nodes_total
 
 
@@ -460,7 +463,7 @@ def find_nodes_total(constraint, collector, schedd):
         except Exception:
             return batch_name_to_nodes_total
 
-        if "DAG_NodesTotal" in ad:
+        if "DAG_NodesTotal" in ad and ad["DAG_NodesTotal"]:
             batch_name_to_nodes_total[job_batch_name] = ad["DAG_NodesTotal"]
 
     return batch_name_to_nodes_total
@@ -520,15 +523,24 @@ def watch_q(
 
     try:
         msg, move, clear = None, None, None
+        batch_name_to_nodes_total = {}
+        start_time = datetime.datetime.now()
 
         while True:
             with display_temporary_message("Processing new events...", enabled=refresh):
+
                 processing_messages = tracker.process_events()
                 now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                cluster_id_to_nodes_total = find_nodes_total(
-                    constraint, collector, schedd
-                )
+                if (
+                    not batch_name_to_nodes_total
+                    and (datetime.datetime.now() - start_time).total_seconds() > 10
+                ):
+                    start_time = datetime.datetime.now()
+                    batch_name_to_nodes_total = find_nodes_total(
+                        constraint, collector, schedd
+                    )
+
                 # "if msg is not None" skips the first iteration, when there's nothing to clear
                 if msg is not None and refresh:
                     msg = strip_ansi(msg)
@@ -537,16 +549,16 @@ def watch_q(
                     move = "\033[{}A\r".format(len(prev_len_lines))
                     clear = "\n".join(" " * len(line) for line in prev_lines) + "\n"
 
-                groups, cluster_id_to_nodes_total = group_clusters(
+                groups, batch_name_to_nodes_total = group_clusters(
                     tracker.clusters,
                     key,
                     dagman_clusters_to_paths,
                     batch_names,
                     dagman_job_cluster_ids,
-                    cluster_id_to_nodes_total,
+                    batch_name_to_nodes_total,
                 )
                 rows_by_key, totals = make_rows_from_groups(
-                    groups, key, cluster_id_to_nodes_total
+                    groups, key, batch_name_to_nodes_total
                 )
 
                 headers, rows_by_key = strip_empty_columns(rows_by_key)
@@ -579,7 +591,6 @@ def watch_q(
                         headers=[key] + headers,
                         rows=[row for _, row in rows_by_key],
                         row_fmt=row_fmt,
-                        cluster_id_to_nodes_total=cluster_id_to_nodes_total,
                         alignment=TABLE_ALIGNMENT,
                         fill="-",
                     )
@@ -1176,7 +1187,6 @@ def make_table(
     terminal_columns,
     headers,
     rows,
-    cluster_id_to_nodes_total,
     fill="",
     header_fmt=None,
     row_fmt=None,
