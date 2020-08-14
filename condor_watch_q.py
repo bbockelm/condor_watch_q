@@ -436,15 +436,18 @@ def group_clusters(
     getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
     group_nodes_total = {}
 
+    dag_batch_names_by_nodes_log = {
+        nodes_log_path: batch_names[cluster]
+        for cluster, nodes_log_path in dagman_clusters_to_paths.items()
+    }
+
     for cluster in clusters:
         # find cluster according to cluster path
-        dag_name = find_key_by_value(dagman_clusters_to_paths, cluster.event_log_path)
+        dag_batch_name = dag_batch_names_by_nodes_log.get(cluster.event_log_path)
 
-        if key == BATCH_NAME and dag_name:
-            groups[batch_names[dag_name]].append(cluster)
-            group_nodes_total[batch_names[dag_name]] = dag_nodes_total.get(
-                batch_names[dag_name]
-            )
+        if key == BATCH_NAME and dag_batch_name is not None:
+            groups[dag_batch_name].append(cluster)
+            group_nodes_total[dag_batch_name] = dag_nodes_total.get(dag_batch_name)
         else:
             if cluster.cluster_id not in dagman_job_cluster_ids:
                 groups[getter(cluster)].append(cluster)
@@ -461,8 +464,8 @@ def find_nodes_total(constraint, collector, schedd):
         try:
             job_batch_name = ad["JobBatchName"]
         except Exception:
-            return batch_name_to_nodes_total
-
+            continue
+        
         if "DAG_NodesTotal" in ad and ad["DAG_NodesTotal"]:
             batch_name_to_nodes_total[job_batch_name] = ad["DAG_NodesTotal"]
 
@@ -523,8 +526,8 @@ def watch_q(
 
     try:
         msg, move, clear = None, None, None
-        batch_name_to_nodes_total = {}
-        start_time = datetime.datetime.now()
+        batch_name_to_nodes_total = find_nodes_total(constraint, collector, schedd)
+        last_nodes_total_check_time = datetime.datetime.now()
 
         while True:
             with display_temporary_message("Processing new events...", enabled=refresh):
@@ -534,9 +537,12 @@ def watch_q(
 
                 if (
                     not batch_name_to_nodes_total
-                    and (datetime.datetime.now() - start_time).total_seconds() > 10
+                    and (
+                        datetime.datetime.now() - last_nodes_total_check_time
+                    ).total_seconds()
+                    > 10
                 ):
-                    start_time = datetime.datetime.now()
+                    last_nodes_total_check_time = datetime.datetime.now()
                     batch_name_to_nodes_total = find_nodes_total(
                         constraint, collector, schedd
                     )
@@ -776,20 +782,18 @@ def find_job_event_logs(
 
         if "DAGManNodesLog" in ad:
             dagman_clusters_to_paths[cluster_id] = log_path = ad["DAGManNodesLog"]
+        elif "UserLog" in ad:
+            if not os.path.isabs(log_path):
+                log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
         else:
-            try:
-                log_path = ad["UserLog"]
-                if not os.path.isabs(log_path):
-                    log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
-            except KeyError:
-                if cluster_id not in already_warned_missing_log:
-                    warning(
-                        "Cluster {} does not have a job event log file (set log=<path> in the submit description)".format(
-                            cluster_id
-                        )
+            if cluster_id not in already_warned_missing_log:
+                warning(
+                    "Cluster {} does not have a job event log file (set log=<path> in the submit description)".format(
+                        cluster_id
                     )
-                    already_warned_missing_log.add(cluster_id)
-                continue
+                )
+                already_warned_missing_log.add(cluster_id)
+            continue
 
         event_logs.add(log_path)
 
@@ -837,7 +841,6 @@ class Cluster:
         self.cluster_id = cluster_id
         self.event_log_path = event_log_path
         self._batch_name = batch_name
-        self.total_nodes = 0
 
         self.job_to_state = {}
 
