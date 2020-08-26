@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 # Copyright 2020 HTCondor Team, Computer Sciences Department,
 # University of Wisconsin-Madison, WI.
@@ -82,6 +82,7 @@ def parse_args():
     parser.add_argument(
         "-debug", action="store_true", help="Turn on HTCondor debug printing."
     )
+
     # TRACKING OPTIONS
 
     parser.add_argument(
@@ -229,6 +230,7 @@ def parse_args():
     )
 
     args, unknown = parser.parse_known_args()
+
     if len(unknown) != 0:
         check_unknown_args_for_known_errors(parser, unknown)
 
@@ -242,6 +244,7 @@ def parse_args():
         "cluster": "cluster_id",
         "batch": "batch_name",
     }[args.groupby]
+
     return args
 
 
@@ -417,56 +420,6 @@ GROUPBY_ATTRIBUTE_TO_AD_KEY = {
 GROUPBY_AD_KEY_TO_ATTRIBUTE = {v: k for k, v in GROUPBY_ATTRIBUTE_TO_AD_KEY.items()}
 
 
-def group_clusters(
-    clusters,
-    key,
-    dagman_clusters_to_paths,
-    batch_names,
-    dagman_job_cluster_ids,
-    dag_nodes_total,
-):
-    groups = collections.defaultdict(list)
-    getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
-    group_nodes_total = {}
-
-    dag_batch_names_by_nodes_log = {
-        nodes_log_path: batch_names[cluster]
-        for cluster, nodes_log_path in dagman_clusters_to_paths.items()
-    }
-    for cluster in clusters:
-        # find cluster according to cluster path
-        dag_batch_name = dag_batch_names_by_nodes_log.get(cluster.event_log_path)
-        if key == BATCH_NAME and dag_batch_name is not None:
-            groups[dag_batch_name].append(cluster)
-            group_nodes_total[dag_batch_name] = dag_nodes_total.get(dag_batch_name)
-        else:
-            if cluster.cluster_id not in dagman_job_cluster_ids:
-                groups[getter(cluster)].append(cluster)
-
-    if not dag_nodes_total:
-        group_nodes_total = dag_nodes_total
-
-    return groups, group_nodes_total
-
-
-def find_nodes_total(constraint, collector, schedd):
-    batch_name_to_nodes_total = {}
-    cluster_ids_with_nodes_total = set()
-
-    for ad in get_ads(constraint, collector, schedd):
-        try:
-            job_batch_name = ad["JobBatchName"]
-            cluster_id = ad["ClusterId"]
-        except KeyError:
-            continue
-
-        if "DAG_NodesTotal" in ad and ad["DAG_NodesTotal"]:
-            batch_name_to_nodes_total[job_batch_name] = ad["DAG_NodesTotal"]
-            cluster_ids_with_nodes_total.add(cluster_id)
-
-    return batch_name_to_nodes_total, cluster_ids_with_nodes_total
-
-
 def watch_q(
     users=None,
     cluster_ids=None,
@@ -523,11 +476,10 @@ def watch_q(
         batch_name_to_nodes_total, cluster_ids_with_nodes_total = find_nodes_total(
             constraint, collector, schedd
         )
-        last_nodes_total_check_time = datetime.datetime.now()
+        last_nodes_total_check_time = time.time()
 
         while True:
             with display_temporary_message("Processing new events...", enabled=refresh):
-
                 processing_messages = tracker.process_events()
                 now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -536,10 +488,7 @@ def watch_q(
                         cluster_id in cluster_ids_with_nodes_total
                         for cluster_id in dagman_job_cluster_ids
                     )
-                    and (
-                        datetime.datetime.now() - last_nodes_total_check_time
-                    ).total_seconds()
-                    > 60
+                    and time.time() - last_nodes_total_check_time > 60
                 ):
                     last_nodes_total_check_time = datetime.datetime.now()
                     (
@@ -634,7 +583,7 @@ def watch_q(
                     msg += "\n..."
 
                 if not exit_conditions:
-                    msg += "\nInput ^c to exit"
+                    msg += "\nInput ^C to exit"
 
             if clear and move:
                 sys.stdout.write(move + clear + move)
@@ -720,13 +669,7 @@ PROJECTION = [
 
 
 def find_job_event_logs(
-    users=None,
-    cluster_ids=None,
-    files=None,
-    batches=None,
-    dagman_ids=None,
-    collector=None,
-    schedd=None,
+    users=None, cluster_ids=None, files=None, batches=None, collector=None, schedd=None,
 ):
     """
     Discover job event logs to read events from based on various methods.
@@ -764,11 +707,12 @@ def find_job_event_logs(
             ("JobBatchName == {}".format(b) for b in batches),
         )
     )
+
     clusters = set()
     event_logs = set()
     batch_names = {}
     already_warned_missing_log = set()
-    dagman_clusters_to_paths = {}
+    dagman_job_cluster_id_to_log_path = {}
     dagman_job_cluster_ids = set()
 
     for file in files:
@@ -780,13 +724,12 @@ def find_job_event_logs(
 
         batch_names[cluster_id] = ad.get("JobBatchName")
 
-        log_path = ""
         if "DAGManNodesLog" in ad:
-            dagman_clusters_to_paths[cluster_id] = log_path = ad["DAGManNodesLog"]
+            log_path = dagman_job_cluster_id_to_log_path[cluster_id] = ad[
+                "DAGManNodesLog"
+            ]
         elif "UserLog" in ad:
             log_path = ad["UserLog"]
-            if not os.path.isabs(log_path):
-                log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
         else:
             if cluster_id not in already_warned_missing_log:
                 warning(
@@ -797,8 +740,12 @@ def find_job_event_logs(
                 already_warned_missing_log.add(cluster_id)
             continue
 
+        if not os.path.isabs(log_path):
+            log_path = os.path.abspath(os.path.join(ad["Iwd"], log_path))
+
         event_logs.add(log_path)
 
+        # this job is the actual DAGMan controller job
         if "OtherJobRemoveRequirements" in ad:
             dagman_job_cluster_ids.add(cluster_id)
 
@@ -807,9 +754,27 @@ def find_job_event_logs(
         constraint,
         event_logs,
         batch_names,
-        dagman_clusters_to_paths,
+        dagman_job_cluster_id_to_log_path,
         dagman_job_cluster_ids,
     )
+
+
+def find_nodes_total(constraint, collector, schedd):
+    batch_name_to_nodes_total = {}
+    cluster_ids_with_nodes_total = set()
+
+    for ad in get_ads(constraint, collector, schedd):
+        try:
+            job_batch_name = ad["JobBatchName"]
+            cluster_id = ad["ClusterId"]
+        except KeyError:
+            continue
+
+        if "DAG_NodesTotal" in ad and ad["DAG_NodesTotal"]:
+            batch_name_to_nodes_total[job_batch_name] = ad["DAG_NodesTotal"]
+            cluster_ids_with_nodes_total.add(cluster_id)
+
+    return batch_name_to_nodes_total, cluster_ids_with_nodes_total
 
 
 def get_ads(constraint, collector, schedd):
@@ -940,6 +905,38 @@ class JobStateTracker:
                 yield state
 
 
+def group_clusters(
+    clusters,
+    key,
+    dagman_job_cluster_id_to_log_path,
+    batch_names,
+    dagman_job_cluster_ids,
+    dag_nodes_total,
+):
+    groups = collections.defaultdict(list)
+    getter = operator.attrgetter(GROUPBY_AD_KEY_TO_ATTRIBUTE[key])
+    group_nodes_total = {}
+
+    dag_batch_names_by_nodes_log = {
+        nodes_log_path: batch_names[cluster]
+        for cluster, nodes_log_path in dagman_job_cluster_id_to_log_path.items()
+    }
+    for cluster in clusters:
+        # find cluster according to cluster path
+        dag_batch_name = dag_batch_names_by_nodes_log.get(cluster.event_log_path)
+        if key == BATCH_NAME and dag_batch_name is not None:
+            groups[dag_batch_name].append(cluster)
+            group_nodes_total[dag_batch_name] = dag_nodes_total.get(dag_batch_name)
+        else:
+            if cluster.cluster_id not in dagman_job_cluster_ids:
+                groups[getter(cluster)].append(cluster)
+
+    if not dag_nodes_total:
+        group_nodes_total = dag_nodes_total
+
+    return groups, group_nodes_total
+
+
 def make_rows_from_groups(groups, key, cluster_id_to_nodes_total):
     totals = collections.defaultdict(int)
     rows = {}
@@ -1013,8 +1010,12 @@ def strip_empty_columns(rows_by_key):
     return headers, rows_by_key
 
 
-def row_data_from_job_state(clusters, total):
+def row_data_from_job_state(clusters, expected_total_jobs=None):
     """Construct the data for a single row."""
+    if expected_total_jobs is None:
+        # ensure expected_total_jobs will get clobbered by the max below
+        expected_total_jobs = -1
+
     row_data = {js: 0 for js in JobStatus}
     active_job_ids = []
 
@@ -1025,10 +1026,7 @@ def row_data_from_job_state(clusters, total):
             if job_state in ACTIVE_STATES:
                 active_job_ids.append("{}.{}".format(cluster.cluster_id, proc_id))
 
-    if total is None:
-        total = -1
-
-    row_data[TOTAL] = max(total, sum(row_data.values()))
+    row_data[TOTAL] = max(expected_total_jobs, sum(row_data.values()))
     active_job_ids.sort(key=lambda jobid: jobid.split("."))
 
     if len(active_job_ids) > 2:
